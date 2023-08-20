@@ -72,7 +72,7 @@ jobs:
         id: create_release
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.create_release }}
         with:
-          name: LanternDB v${{ steps.package.outputs.package_version }}
+          name: LanternDB Extras v${{ steps.package.outputs.package_version }}
           tag_name: v${{ steps.package.outputs.package_version }}
           files: ${{ steps.package.outputs.package_path }}
           generate_release_notes: true
