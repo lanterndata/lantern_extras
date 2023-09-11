@@ -1,9 +1,9 @@
 # LanternDB Extras
 
-This extension makes it a brease to experiment with embeddings from inside a postgres database. We use this extension along with [LanternDB](https://github.com/lanterndata/lanterndb) to make vector operations performant. But all the helpers here are standalone and may be used without the main database.
+This extension makes it a breeze to experiment with embeddings from inside a postgres database. We use this extension along with [LanternDB](https://github.com/lanterndata/lanterndb) to make vector operations performant. But all the helpers here are standalone and may be used without the main database.
 
-__NOTE__: Functions defined in this extension use postgres in ways postgres is usually not used. 
-Some calls may result in large file downloads, or cpu-intensive model inference operations. Keep this in mind when using this extension a shared postgres environment.
+__NOTE__: Functions defined in this extension use Postgres in ways Postgres is usually not used. 
+Some calls may result in large file downloads, or CPU-intensive model inference operations. Keep this in mind when using this extension a shared Postgres environment.
 
 ## Features
 
