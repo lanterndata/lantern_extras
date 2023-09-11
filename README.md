@@ -107,5 +107,4 @@ ldb-create-index -u "postgresql://localhost/test" -t "small_world" -c "vec" -m 1
 ```
 
 ### Notes
-The index should be created from the same database on which it will be loaded, so row tids will match later.  
-The current version of usearch is not up to date, so it will match with LanternDB's usearch version, but this version has bugs when creating index with more than 8k items.
+The index should be created from the same database on which it will be loaded, so row tids will match later.
