@@ -55,7 +55,7 @@ async fn index_chunk(
     let rows = client
         .query(
             &format!(
-                "SELECT ctid, {} FROM {} LIMIT {} OFFSET {};",
+                "SELECT ctid, {} FROM {} ORDER BY ctid LIMIT {} OFFSET {};",
                 args.column, args.table, limit, offset
             ),
             &[],
