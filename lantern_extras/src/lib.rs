@@ -11,9 +11,12 @@ pub mod encoder;
 #[macro_use]
 extern crate lazy_static;
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, cost=200000000)]
 fn clip_text<'a>(text: &'a str) -> Vec<f32> {
-    return encoder::clip::process_text("clip/ViT-B-32-textual", text.to_owned());
+    notice!("clip text begin");
+    let v =  encoder::clip::process_text("clip/ViT-B-32-textual", text.to_owned());
+    notice!("clip text end");
+    return v;
 }
 
 #[pg_extern(immutable, parallel_safe)]

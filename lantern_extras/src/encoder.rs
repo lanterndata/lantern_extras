@@ -9,17 +9,22 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{mpsc, Arc, Mutex, RwLock};
+use std::thread::{self, JoinHandle};
+use std::time::{Duration, Instant};
 use tokenizers::{
     PaddingDirection, PaddingParams, PaddingStrategy, Tokenizer, TruncationDirection,
     TruncationParams, TruncationStrategy,
 };
 
+#[derive(Clone)]
 pub struct EncoderService {
     name: String,
     tokenizer: Option<Tokenizer>,
     vision_size: Option<usize>,
-    encoder: Session,
+    encoder: Arc<Mutex<Session>>,
+    work_queue: mpsc::Sender<(String, mpsc::Sender<Vec<f32>>)>,
+    worker_handle: Arc<Mutex<Option<JoinHandle<()>>>>,
 }
 
 pub struct EncoderOptions {
@@ -106,19 +111,75 @@ impl EncoderService {
             .with_optimization_level(GraphOptimizationLevel::Level3)?
             .with_model_from_file(Path::join(model_folder, "model.onnx"))?;
 
-        Ok(EncoderService {
+        let (work_tx, work_rx) = mpsc::channel::<(String, mpsc::Sender<Vec<f32>>)>();
+        let service = EncoderService {
             name: model_name.to_string(),
             tokenizer,
-            encoder,
+            encoder: Arc::new(Mutex::new(encoder)),
+            work_queue: work_tx,
+            worker_handle: Arc::new(Mutex::new(None)),
             vision_size: args.input_image_size,
-        })
+        };
+        let service_worker = service.clone();
+
+        let worker = thread::spawn(move || {
+            service_worker.work_batcher_thread(work_rx);
+        });
+
+        let mut lock = service.worker_handle.lock().unwrap();
+        *lock = Some(worker);
+        drop(lock);
+
+        Ok(service)
+    }
+
+    fn work_batcher_thread(&self, work_rx: mpsc::Receiver<(String, mpsc::Sender<Vec<f32>>)>) {
+        let mut batch_work: Vec<String> = Vec::with_capacity(200);
+        let mut batch_results: Vec<mpsc::Sender<Vec<f32>>> = Vec::with_capacity(200);
+
+        loop {
+            batch_work.clear();
+            batch_results.clear();
+
+            // block on at least one receive before using the timeout
+            // so we do not burn CPU cyles on the busy looping
+            {
+                let work = work_rx.recv().unwrap();
+                batch_work.push(work.0);
+                batch_results.push(work.1);
+            }
+
+            let batch_start = Instant::now();
+            let mut remaining_time = Some(Duration::from_millis(100));
+
+            while let Some(t) = remaining_time {
+                match work_rx.recv_timeout(t) {
+                    Ok(work) => {
+                        remaining_time = t.checked_sub(batch_start.elapsed());
+
+                        batch_work.push(work.0);
+                        batch_results.push(work.1);
+                    }
+                    Err(_) => break,
+                }
+            }
+
+            let v = self
+                .process_text(&batch_work.iter().map(|v| v.as_ref()).collect())
+                .unwrap();
+            assert!(v.len() == batch_results.len());
+
+            v.into_iter()
+                .zip(batch_results.iter())
+                .for_each(|(res, chan)| chan.send(res).unwrap());
+        }
     }
 
     fn process_text_bge(
         &self,
         text: &Vec<&str>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
-        let session = &self.encoder;
+        let session = &self.encoder.lock().unwrap();
         let preprocessed = self
             .tokenizer
             .as_ref()
@@ -182,7 +243,7 @@ impl EncoderService {
         &self,
         text: &Vec<&str>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
-        let session = &self.encoder;
+        let session = &self.encoder.lock().unwrap();
         let preprocessed = self
             .tokenizer
             .as_ref()
@@ -230,6 +291,12 @@ impl EncoderService {
             .collect())
     }
 
+    fn enqueue_work(&self, text: String) -> mpsc::Receiver<Vec<f32>> {
+        let (tx, rx) = mpsc::channel::<Vec<f32>>();
+        self.work_queue.send((text, tx)).unwrap();
+        rx
+    }
+
     fn process_text(
         &self,
         text: &Vec<&str>,
@@ -246,7 +313,7 @@ impl EncoderService {
         &self,
         images_bytes: &Vec<Vec<u8>>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
-        let session = &self.encoder;
+        let session = &self.encoder.lock().unwrap();
         let mean = vec![0.48145466, 0.4578275, 0.40821073]; // CLIP Dataset
         let std = vec![0.26862954, 0.26130258, 0.27577711];
 
@@ -394,17 +461,14 @@ pub mod clip {
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(model_name).unwrap();
 
-        let result = model_info
-            .encoder
-            .as_ref()
-            .unwrap()
-            .process_text(&vec![&text]);
+        let result = model_info.encoder.as_ref().unwrap().enqueue_work(text);
+        // .process_text(&vec![&text]);
 
-        match result {
-            Ok(res) => res[0].clone(),
+        drop(map);
+        match result.recv() {
+            Ok(res) => res,
             Err(err) => {
                 // remove lock
-                drop(map);
                 error!("Error happened while generating text embedding {:?}", err);
             }
         }
