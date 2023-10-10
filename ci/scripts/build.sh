@@ -113,7 +113,7 @@ setup_environment && \
 setup_locale_and_install_packages && \
 setup_rust
 
-if [ ! -z "$PACKAGE_CLI_INDEX" ]
+if [ ! -z "$PACKAGE_CLI" ]
 then
  package_cli
 else
