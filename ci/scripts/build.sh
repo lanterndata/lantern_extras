@@ -63,15 +63,15 @@ function setup_cargo_deps() {
   cargo pgrx init "--pg$PG_VERSION" /usr/bin/pg_config
 }
 
-function package_create_index() {
-  VERSION=$(cargo metadata --format-version 1 | jq '.packages[] | select( .name == "lantern_create_index") | .version' | tr -d '"')
-  PACKAGE_NAME=lantern-create-index-${VERSION}-${ARCH}
+function package_cli() {
+  VERSION=$(cargo metadata --format-version 1 | jq '.packages[] | select( .name == "lantern_cli") | .version' | tr -d '"')
+  PACKAGE_NAME=lantern-cli-${VERSION}-${ARCH}
   SOURCE_DIR=$(pwd)
-  BINARY_NAME=lantern-create-index
+  BINARY_NAME=lantern-cli
   OUT_DIR=/tmp/${BINARY_NAME}
   BUILD_DIR=${SOURCE_DIR}/target/release/
   
-  cargo build --package lantern_create_index --release 
+  cargo build --package lantern_cli --release 
 
   mkdir -p ${OUT_DIR}
   
@@ -80,7 +80,7 @@ function package_create_index() {
   pushd "$OUT_DIR"
     tar cf ${PACKAGE_NAME}.tar $BINARY_NAME
     ## Write output so we can use this in actions and upload artifacts
-    echo "create_index_package_path=${OUT_DIR}/${PACKAGE_NAME}.tar" >> $GITHUB_OUTPUT
+    echo "cli_package_path=${OUT_DIR}/${PACKAGE_NAME}.tar" >> $GITHUB_OUTPUT
   popd
 }
 
@@ -113,9 +113,9 @@ setup_environment && \
 setup_locale_and_install_packages && \
 setup_rust
 
-if [ ! -z "$PACKAGE_CREATE_INDEX" ]
+if [ ! -z "$PACKAGE_CLI_INDEX" ]
 then
- package_create_index
+ package_cli
 else
  setup_postgres && \
  install_onnx_runtime && \
