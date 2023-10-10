@@ -15,6 +15,9 @@ use tokenizers::{
     TruncationParams, TruncationStrategy,
 };
 
+#[macro_use]
+extern crate lazy_static;
+
 pub struct EncoderService {
     name: String,
     tokenizer: Option<Tokenizer>,
@@ -59,6 +62,12 @@ lazy_static! {
         .unwrap()
         .into_arc();
 }
+
+fn default_logger(text: &str) {
+    println!("{}", text);
+}
+
+pub type LoggerFn = fn(&str);
 
 impl EncoderService {
     pub fn new(
@@ -308,7 +317,6 @@ impl EncoderService {
 
 pub mod clip {
 
-    use crate::{error, notice};
     use std::{fs::create_dir_all, time::Duration};
     use url::Url;
 
@@ -325,7 +333,11 @@ pub mod clip {
         Ok(())
     }
 
-    fn check_and_download_files(model_name: &str) -> Result<(), anyhow::Error> {
+    fn check_and_download_files(
+        model_name: &str,
+        logger: &LoggerFn,
+        data_path: &str,
+    ) -> Result<(), anyhow::Error> {
         {
             let map = MODEL_INFO_MAP.read().unwrap();
             let model_info = map.get(model_name);
@@ -341,26 +353,23 @@ pub mod clip {
                 return Ok(());
             }
         }
-        
+
         let mut map_write = MODEL_INFO_MAP.write().unwrap();
         let model_info = map_write.get_mut(model_name).unwrap();
 
-        let model_folder = Path::join(&Path::new(DATA_PATH), model_name);
+        let model_folder = Path::join(&Path::new(data_path), model_name);
         let model_path = Path::join(&model_folder, "model.onnx");
         let tokenizer_path = Path::join(&model_folder, "tokenizer.json");
 
         // TODO parallel download with tokio
         if !model_path.exists() {
             // model is not downloaded, we should download it
-            notice!(
-                "Downloading model {} [this is one time operation]",
-                model_name
-            );
+            logger("Downloading model [this is one time operation]");
             download_file(model_info.url, &model_path)?;
         }
 
         if !tokenizer_path.exists() && model_info.tokenizer_url.is_some() {
-            notice!("Downloading tokenizer [this is one time operation]");
+            logger("Downloading tokenizer [this is one time operation]");
             // tokenizer is not downloaded, we should download it
             download_file(model_info.tokenizer_url.unwrap(), &tokenizer_path)?;
         }
@@ -384,77 +393,90 @@ pub mod clip {
     }
 
     use super::*;
-    pub fn process_text(model_name: &str, text: String) -> Vec<f32> {
-        let download_result = check_and_download_files(model_name);
+    pub fn process_text(
+        model_name: &str,
+        texts: &Vec<&str>,
+        logger: Option<&LoggerFn>,
+        data_path: Option<&str>,
+    ) -> Result<Vec<Vec<f32>>, anyhow::Error> {
+        let logger = logger.unwrap_or(&(default_logger as LoggerFn));
+        let download_result =
+            check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
 
         if let Err(err) = download_result {
-            error!("Error happened while downloading model files {:?}", err);
+            anyhow::bail!("Error happened while downloading model files {:?}", err);
         }
 
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(model_name).unwrap();
 
-        let result = model_info
-            .encoder
-            .as_ref()
-            .unwrap()
-            .process_text(&vec![&text]);
+        let result = model_info.encoder.as_ref().unwrap().process_text(texts);
 
         match result {
-            Ok(res) => res[0].clone(),
+            Ok(res) => Ok(res.clone()),
             Err(err) => {
                 // remove lock
                 drop(map);
-                error!("Error happened while generating text embedding {:?}", err);
+                anyhow::bail!("Error happened while generating text embedding {:?}", err);
             }
         }
     }
 
-    pub fn process_image(model_name: &str, path_or_url: String) -> Vec<f32> {
-        let download_result = check_and_download_files(model_name);
+    pub fn process_image(
+        model_name: &str,
+        paths_or_urls: &Vec<&str>,
+        logger: Option<&LoggerFn>,
+        data_path: Option<&str>,
+    ) -> Result<Vec<Vec<f32>>, anyhow::Error> {
+        let mut buffers = Vec::with_capacity(paths_or_urls.len());
+        let logger = logger.unwrap_or(&(default_logger as LoggerFn));
 
-        if let Err(err) = download_result {
-            error!("Error happened while downloading model files {:?}", err);
-        }
+        // Todo make this parallel
+        for path_or_url in paths_or_urls {
+            let download_result =
+                check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
 
-        let mut buffer = Vec::new();
-        if let Ok(url) = Url::parse(&path_or_url) {
-            notice!("Downloading image");
-            let response = reqwest::blocking::get(url).expect("Failed to download image");
-            buffer = response
-                .bytes()
-                .expect("Failed to read response body")
-                .to_vec();
-        } else {
-            let mut f = File::open(Path::new(&path_or_url)).unwrap();
-            f.read_to_end(&mut buffer).unwrap();
+            if let Err(err) = download_result {
+                anyhow::bail!("Error happened while downloading model files {:?}", err);
+            }
+
+            let mut buffer = Vec::new();
+            if let Ok(url) = Url::parse(&path_or_url) {
+                logger("Downloading image");
+                let response = reqwest::blocking::get(url).expect("Failed to download image");
+                buffer = response
+                    .bytes()
+                    .expect("Failed to read response body")
+                    .to_vec();
+            } else {
+                let mut f = File::open(Path::new(&path_or_url)).unwrap();
+                f.read_to_end(&mut buffer).unwrap();
+            }
+            buffers.push(buffer)
         }
 
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(model_name).unwrap();
 
-        let result = model_info
-            .encoder
-            .as_ref()
-            .unwrap()
-            .process_image(&vec![buffer]);
+        let result = model_info.encoder.as_ref().unwrap().process_image(&buffers);
 
         match result {
-            Ok(res) => res[0].clone(),
+            Ok(res) => Ok(res.clone()),
             Err(err) => {
                 // remove lock
                 drop(map);
-                error!("Error happened while generating text embedding {:?}", err);
+                anyhow::bail!("Error happened while generating text embedding {:?}", err);
             }
         }
     }
 
-    pub fn get_available_models() -> String {
+    pub fn get_available_models(data_path: Option<&str>) -> String {
         let map = MODEL_INFO_MAP.read().unwrap();
         let mut res = String::new();
+        let data_path = data_path.unwrap_or(DATA_PATH);
         for (key, value) in &*map {
             let model_exists =
-                if Path::join(&Path::new(DATA_PATH), format!("{}/model.onnx", key)).exists() {
+                if Path::join(&Path::new(data_path), format!("{}/model.onnx", key)).exists() {
                     "true"
                 } else {
                     "false"

@@ -64,6 +64,7 @@ make install
 ```
 
 ### Building from source
+
 <details>
 <summary> Click to expand</summary>
 
@@ -79,6 +80,7 @@ export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime
 
 This extension is written in Rust so requires Rust toolchain. Make sure Rust toolchain is installed before continuing
 The extension also uses `pgrx`. If pgrx is not already installed, use the following commands to install it:
+
 ```
 #install pgrx prerequisites
 sudo apt install pkg-config libssl-dev zlib1g-dev libreadline-dev
@@ -90,6 +92,7 @@ cargo pgrx init
 ```
 
 Then, you can run the extension under development with the following
+
 ```bash
 cargo pgrx run --package lantern_extras # runs in a testing environment
 ```
@@ -99,6 +102,7 @@ To package the extension run
 ```bash
 cargo pgrx package --package lantern_extras
 ```
+
 </details>
 ### Initializing with psql
 
@@ -133,22 +137,38 @@ This is a CLI application that creates an index for Lantern outside of Postgres 
 
 ### Installation
 
-Run `cargo install --path lantern_create_index` to install the binary
+Run `cargo install --path lantern_cli` to install the binary
 
 ### Usage
 
-Run `lantern-create-index --help` to show the cli options.
+Run `lantern-cli create-index --help` to show the cli options.
 
 ```bash
-Usage: lantern-create-index --uri <URI> --table <TABLE> --column <COLUMN> -m <M> --efc <EFC> --ef <EF> -d <DIMS> --metric-kind <METRIC_KIND> --out <OUT>
+Usage: lantern-cli create-index --uri <URI> --table <TABLE> --column <COLUMN> -m <M> --efc <EFC> --ef <EF> -d <DIMS> --metric-kind <METRIC_KIND> --out <OUT>
 ```
 
 ### Example
 
 ```bash
-lantern-create-index -u "postgresql://localhost/test" -t "small_world" -c "vec" -m 16 --ef 64 --efc 128 -d 3 --metric-kind cos --out /tmp/index.usearch
+lantern-cli create-index -u "postgresql://localhost/test" -t "small_world" -c "vec" -m 16 --ef 64 --efc 128 -d 3 --metric-kind cos --out /tmp/index.usearch
 ```
 
 ### Notes
 
 The index should be created from the same database on which it will be loaded, so row tids will match later.
+
+## Lantern Embeddings
+
+## Description
+
+This is a CLI application that creates vector embeddings from your postgres data.
+
+## How to use
+
+### Installation
+
+Run `cargo install --path lantern_cli` to install the binary
+
+### Usage
+
+Run `lantern-cli create-embeddings --help` to show the cli options.
