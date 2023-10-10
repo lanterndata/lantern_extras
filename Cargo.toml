@@ -9,6 +9,7 @@ members = [
     "lantern_embeddings",
     "lantern_embeddings_core",
     "lantern_cli",
+    "lantern_daemon",
 ]
 
 [profile.release]

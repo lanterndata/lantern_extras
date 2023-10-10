@@ -28,7 +28,6 @@ pub struct EmbeddingArgs {
     pub column: String,
 
     /// Output db uri, fully associated database connection string including db name. Defaults to
-    /// uri
     #[arg(long)]
     pub out_uri: Option<String>,
 

@@ -13,11 +13,12 @@ use postgres::{Client, NoTls, Row};
 pub mod cli;
 
 type EmbeddingRecord = (String, Vec<f32>);
+type AnyhowVoidResult = Result<(), anyhow::Error>;
 
 fn producer_worker(
     args: &cli::EmbeddingArgs,
     tx: Sender<Vec<Row>>,
-) -> Result<JoinHandle<()>, anyhow::Error> {
+) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let uri = args.uri.clone();
     let pk = args.pk.clone();
     let column = args.column.clone();
@@ -26,16 +27,15 @@ fn producer_worker(
     let batch_size = args.batch_size.clone();
 
     let handle = std::thread::spawn(move || {
-        let mut client = Client::connect(&uri, NoTls).unwrap();
-        let mut transaction = client.transaction().unwrap();
+        let mut client = Client::connect(&uri, NoTls)?;
+        let mut transaction = client.transaction()?;
         let rows = transaction
             .query(
                 &format!(
                     "SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid ='\"{schema}\".\"{table}\"'::regclass"
                 ),
                 &[],
-            )
-            .unwrap();
+            )?;
         let count: i64 = rows[0].get(0);
         if count > 0 {
             println!(
@@ -46,18 +46,14 @@ fn producer_worker(
             println!("[-] Could not estimate table size");
         }
         // With portal we can execute a query and poll values from it in chunks
-        let portal = transaction
-            .bind(
-                &format!("SELECT \"{pk}\"::text, \"{column}\" FROM \"{schema}\".\"{table}\";"),
-                &[],
-            )
-            .unwrap();
+        let portal = transaction.bind(
+            &format!("SELECT \"{pk}\"::text, \"{column}\" FROM \"{schema}\".\"{table}\";"),
+            &[],
+        )?;
 
         loop {
             // poll batch_size rows from portal and send it to embedding thread via channel
-            let rows = transaction
-                .query_portal(&portal, batch_size as i32)
-                .unwrap();
+            let rows = transaction.query_portal(&portal, batch_size as i32)?;
 
             if rows.len() == 0 {
                 break;
@@ -68,6 +64,7 @@ fn producer_worker(
             }
         }
         drop(tx);
+        Ok(())
     });
 
     return Ok(handle);
@@ -77,7 +74,7 @@ fn embedding_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<Row>>,
     tx: Sender<Vec<EmbeddingRecord>>,
-) -> Result<JoinHandle<()>, anyhow::Error> {
+) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let is_visual = args.visual.clone();
     let model = args.model.clone();
     let data_path = args.data_path.clone();
@@ -120,7 +117,7 @@ fn embedding_worker(
             };
 
             if let Err(e) = response_embeddings {
-                panic!("{}", e);
+                anyhow::bail!("{}", e);
             }
 
             let response_embeddings = response_embeddings.unwrap();
@@ -145,6 +142,7 @@ fn embedding_worker(
         }
         println!("[*] Embedding generation finished, waiting to export results...");
         drop(tx);
+        Ok(())
     });
 
     return Ok(handle);
@@ -153,7 +151,7 @@ fn embedding_worker(
 fn db_exporter_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<EmbeddingRecord>>,
-) -> Result<JoinHandle<()>, anyhow::Error> {
+) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let uri = args.out_uri.clone().unwrap_or(args.uri.clone());
     let pk = args.pk.clone();
     let column = args.out_column.clone();
@@ -161,8 +159,8 @@ fn db_exporter_worker(
     let schema = args.schema.clone();
 
     let handle = std::thread::spawn(move || {
-        let mut client = Client::connect(&uri, NoTls).unwrap();
-        let mut transaction = client.transaction().unwrap();
+        let mut client = Client::connect(&uri, NoTls)?;
+        let mut transaction = client.transaction()?;
         let mut rng = rand::thread_rng();
         let temp_table_name = format!("_lantern_tmp_{}", rng.gen_range(0..1000));
 
@@ -172,18 +170,22 @@ fn db_exporter_worker(
                     "CREATE TEMPORARY TABLE {temp_table_name} AS SELECT \"{pk}\", '{{}}'::REAL[] AS \"{column}\" FROM \"{schema}\".\"{table}\" LIMIT 0"
                 ),
                 &[],
-            )
-            .unwrap();
-        transaction.commit().unwrap();
-        let mut transaction = client.transaction().unwrap();
-        let writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"));
-        let mut writer = writer.unwrap();
+            )?;
+        transaction.commit()?;
+        let mut transaction = client.transaction()?;
+        let mut writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"))?;
+        let mut did_receive = false;
         loop {
             let rows = rx.recv();
             if rows.is_err() {
                 // channel has been closed
                 break;
             }
+
+            if !did_receive {
+                did_receive = true;
+            }
+
             let rows = rows.unwrap();
             for row in &rows {
                 let vector_string = &format!(
@@ -195,33 +197,35 @@ fn db_exporter_worker(
                         .join(",")
                 );
                 let row_str = format!("{}\t{}\n", row.0.to_string(), vector_string);
-                writer.write_all(row_str.as_bytes()).unwrap();
+                writer.write_all(row_str.as_bytes())?;
             }
         }
 
-        writer.flush().unwrap();
-        writer.finish().unwrap();
-        transaction
-            .execute(
-                &format!(
-                    "ALTER TABLE \"{schema}\".\"{table}\" ADD COLUMN IF NOT EXISTS \"{column}\" REAL[]"
-                ),
-                &[],
-            )
-            .unwrap();
+        if !did_receive {
+            return Ok(());
+        }
+
+        writer.flush()?;
+        writer.finish()?;
+        transaction.execute(
+            &format!(
+                "ALTER TABLE \"{schema}\".\"{table}\" ADD COLUMN IF NOT EXISTS \"{column}\" REAL[]"
+            ),
+            &[],
+        )?;
         transaction
             .execute(
                 &format!(
                 "UPDATE \"{schema}\".\"{table}\" dest SET \"{column}\" = src.\"{column}\" FROM \"{temp_table_name}\" src WHERE src.\"{pk}\" = dest.\"{pk}\""
             ),
                 &[],
-            )
-            .unwrap();
-        transaction.commit().unwrap();
+            )?;
+        transaction.commit()?;
         println!(
             "[*] Embeddings exported to table {} under column {}",
             &table, &column
         );
+        Ok(())
     });
 
     return Ok(handle);
@@ -230,7 +234,7 @@ fn db_exporter_worker(
 fn csv_exporter_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<EmbeddingRecord>>,
-) -> Result<JoinHandle<()>, anyhow::Error> {
+) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let csv_path = args.out_csv.clone().unwrap();
     let handle = std::thread::spawn(move || {
         let mut wtr = Writer::from_path(&csv_path).unwrap();
@@ -257,6 +261,7 @@ fn csv_exporter_worker(
         }
         wtr.flush().unwrap();
         println!("[*] Embeddings exported to {}", &csv_path);
+        Ok(())
     });
 
     return Ok(handle);
@@ -294,7 +299,10 @@ pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow
     ];
 
     for handle in handles {
-        handle.join().unwrap();
+        if let Err(e) = handle.join().unwrap() {
+            println!("[X] {}", e);
+            anyhow::bail!("{}", e);
+        }
     }
 
     Ok(())
