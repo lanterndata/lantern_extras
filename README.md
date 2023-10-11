@@ -75,7 +75,7 @@ Then you should export these 2 environment variables
 
 ```bash
 export ORT_STRATEGY=system
-export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime
+export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime/lib/libonnxruntime.so
 ```
 
 This extension is written in Rust so requires Rust toolchain. Make sure Rust toolchain is installed before continuing
@@ -211,5 +211,5 @@ INSERT INTO images (url) VALUES ('https://cdn.pixabay.com/photo/2014/11/30/14/11
 2. Run embedding generation
 
 ```bash
-lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --visual true
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --visual
 ```

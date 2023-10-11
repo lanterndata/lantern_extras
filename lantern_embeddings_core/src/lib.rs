@@ -1,3 +1,4 @@
+use futures::stream::StreamExt;
 use image::imageops::FilterType;
 use image::io::Reader as ImageReader;
 use image::GenericImageView;
@@ -6,14 +7,14 @@ use ndarray::{Array2, Array4, CowArray, Dim};
 use ort::session::Session;
 use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value};
 use std::collections::HashMap;
-use std::fs::File;
-use std::io::{Cursor, Read};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use tokenizers::{
     PaddingDirection, PaddingParams, PaddingStrategy, Tokenizer, TruncationDirection,
     TruncationParams, TruncationStrategy,
 };
+use tokio::{fs, runtime};
 
 #[macro_use]
 extern crate lazy_static;
@@ -317,7 +318,7 @@ impl EncoderService {
 
 pub mod clip {
 
-    use std::{fs::create_dir_all, time::Duration};
+    use std::{fs::create_dir_all, sync::Mutex, time::Duration};
     use url::Url;
 
     fn download_file(url: &str, path: &PathBuf) -> Result<(), anyhow::Error> {
@@ -422,13 +423,51 @@ pub mod clip {
         }
     }
 
+    async fn get_image_buffer(path_or_url: &str) -> Result<Vec<u8>, anyhow::Error> {
+        if let Ok(url) = Url::parse(path_or_url) {
+            return Ok(reqwest::get(url).await?.bytes().await?.to_vec());
+        } else {
+            return Ok(fs::read(path_or_url).await?);
+        }
+    }
+
+    fn get_images_parallel(
+        paths_or_urls: &Vec<&str>,
+        logger: &LoggerFn,
+    ) -> Result<Vec<Vec<u8>>, anyhow::Error> {
+        let buffers: Arc<Mutex<Vec<Vec<u8>>>> =
+            Arc::new(Mutex::new(Vec::with_capacity(paths_or_urls.len())));
+        let threaded_rt = runtime::Runtime::new()?;
+        let tasks: Vec<_> = paths_or_urls
+            .iter()
+            .map(|&path_or_url| get_image_buffer(path_or_url))
+            .collect();
+        let chunk_size = std::thread::available_parallelism().unwrap().into();
+
+        logger(&format!(
+            "[*] Trying to read/download {} images",
+            paths_or_urls.len()
+        ));
+
+        threaded_rt.block_on(async {
+            let mut tasks = futures::stream::iter(tasks).buffered(chunk_size);
+            while let Some(result) = tasks.next().await {
+                let mut buffers = buffers.lock().unwrap();
+                buffers.push(result.unwrap());
+            }
+        });
+
+        logger("[*] All images read into buffer");
+        let buffers = buffers.lock().unwrap();
+        Ok(buffers.clone())
+    }
+
     pub fn process_image(
         model_name: &str,
         paths_or_urls: &Vec<&str>,
         logger: Option<&LoggerFn>,
         data_path: Option<&str>,
     ) -> Result<Vec<Vec<f32>>, anyhow::Error> {
-        let mut buffers = Vec::with_capacity(paths_or_urls.len());
         let logger = logger.unwrap_or(&(default_logger as LoggerFn));
 
         let download_result =
@@ -438,26 +477,12 @@ pub mod clip {
             anyhow::bail!("Error happened while downloading model files: {:?}", err);
         }
 
-        // Todo make this parallel
-        for path_or_url in paths_or_urls {
-            let mut buffer = Vec::new();
-            if let Ok(url) = Url::parse(&path_or_url) {
-                logger(&format!("Downloading image {}", path_or_url));
-                let response = reqwest::blocking::get(url).expect("Failed to download image");
-                buffer = response
-                    .bytes()
-                    .expect("Failed to read response body")
-                    .to_vec();
-            } else {
-                let mut f = File::open(Path::new(&path_or_url)).unwrap();
-                f.read_to_end(&mut buffer).unwrap();
-            }
-            buffers.push(buffer)
-        }
+        let buffers = get_images_parallel(paths_or_urls, logger)?;
 
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(model_name).unwrap();
 
+        println!("[*] Creating embeddings...");
         let result = model_info.encoder.as_ref().unwrap().process_image(&buffers);
 
         match result {
