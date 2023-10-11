@@ -3,6 +3,7 @@ use lantern_embeddings_core::clip;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
+use std::time::Instant;
 
 use postgres::{Client, NoTls, Row};
 
@@ -23,6 +24,14 @@ fn producer_worker(
     let handle = std::thread::spawn(move || {
         let mut client = Client::connect(&uri, NoTls).unwrap();
         let mut transaction = client.transaction().unwrap();
+        let rows = transaction
+            .query(
+                &format!("SELECT COUNT(\"{}\") FROM \"{}\";", pk, table),
+                &[],
+            )
+            .unwrap();
+        let count: i64 = rows[0].get(0);
+        println!("[*] Found {} items in table \"{}\"", count, table);
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction
             .bind(
@@ -40,7 +49,10 @@ fn producer_worker(
             if rows.len() == 0 {
                 break;
             }
-            tx.send(rows).unwrap();
+
+            if tx.send(rows).is_err() {
+                break;
+            }
         }
         drop(tx);
     });
@@ -55,7 +67,9 @@ fn embedding_worker(
 ) -> Result<JoinHandle<()>, anyhow::Error> {
     let is_visual = args.visual.clone();
     let model = args.model.clone();
-    let data_path = args.data_dir.clone();
+    let data_path = args.data_path.clone();
+    let start = Instant::now();
+    let mut count: u64 = 0;
 
     let handle = std::thread::spawn(move || {
         loop {
@@ -78,7 +92,20 @@ fn embedding_worker(
                 clip::process_text(&model, &input_vectors, None, data_path.as_deref())
             };
 
+            if let Err(e) = response_embeddings {
+                eprintln!("{}", e);
+                break;
+            }
+
             let response_embeddings = response_embeddings.unwrap();
+
+            count += response_embeddings.len() as u64;
+
+            println!(
+                "[*] Generated {} embeddings - speed {} emb/s",
+                count,
+                count / start.elapsed().as_secs()
+            );
 
             let mut response_data = Vec::with_capacity(rows.len());
 
@@ -124,7 +151,6 @@ fn db_exporter_worker(
                     )
                     .unwrap();
             }
-            println!("Generated {} embeddings", rows.len());
         }
     });
 
@@ -159,7 +185,6 @@ fn csv_exporter_worker(
                 wtr.write_record(&[&row.0.to_string(), vector_string])
                     .unwrap();
             }
-            println!("Generated {} embeddings", rows.len());
         }
         wtr.flush().unwrap();
     });
@@ -168,6 +193,11 @@ fn csv_exporter_worker(
 }
 
 pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow::Error> {
+    println!("[*] Lantern CLI - Create Embeddings");
+    println!(
+        "[*] Model - {}, Visual - {}, Batch Size - {}",
+        args.model, args.visual, args.batch_size
+    );
     let (producer_tx, producer_rx): (Sender<Vec<Row>>, Receiver<Vec<Row>>) = mpsc::channel();
     let (embedding_tx, embedding_rx): (
         Sender<Vec<EmbeddingRecord>>,
@@ -191,4 +221,9 @@ pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow
     }
 
     Ok(())
+}
+
+pub fn show_available_models(args: &cli::ShowModelsArgs) {
+    println!("[*] Lantern CLI - Available Models\n");
+    println!("{}", clip::get_available_models(args.data_path.as_deref()));
 }

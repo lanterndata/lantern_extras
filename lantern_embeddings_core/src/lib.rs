@@ -343,7 +343,7 @@ pub mod clip {
             let model_info = map.get(model_name);
 
             if model_info.is_none() {
-                anyhow::bail!("Model {} not found. Use 'SELECT get_available_models()' to view the list of avaialble models", model_name)
+                anyhow::bail!("Model \"{}\" not found", model_name)
             }
 
             let model_info = model_info.unwrap();
@@ -404,7 +404,7 @@ pub mod clip {
             check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
 
         if let Err(err) = download_result {
-            anyhow::bail!("Error happened while downloading model files {:?}", err);
+            anyhow::bail!("Error happened while downloading model files: {:?}", err);
         }
 
         let map = MODEL_INFO_MAP.read().unwrap();
@@ -417,7 +417,7 @@ pub mod clip {
             Err(err) => {
                 // remove lock
                 drop(map);
-                anyhow::bail!("Error happened while generating text embedding {:?}", err);
+                anyhow::bail!("Error happened while generating text embedding: {:?}", err);
             }
         }
     }
@@ -431,18 +431,18 @@ pub mod clip {
         let mut buffers = Vec::with_capacity(paths_or_urls.len());
         let logger = logger.unwrap_or(&(default_logger as LoggerFn));
 
+        let download_result =
+            check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
+
+        if let Err(err) = download_result {
+            anyhow::bail!("Error happened while downloading model files: {:?}", err);
+        }
+
         // Todo make this parallel
         for path_or_url in paths_or_urls {
-            let download_result =
-                check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
-
-            if let Err(err) = download_result {
-                anyhow::bail!("Error happened while downloading model files {:?}", err);
-            }
-
             let mut buffer = Vec::new();
             if let Ok(url) = Url::parse(&path_or_url) {
-                logger("Downloading image");
+                logger(&format!("Downloading image {}", path_or_url));
                 let response = reqwest::blocking::get(url).expect("Failed to download image");
                 buffer = response
                     .bytes()

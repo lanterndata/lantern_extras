@@ -40,9 +40,9 @@ pub struct EmbeddingArgs {
     #[arg(short, long, default_value_t = 200)]
     pub batch_size: usize,
 
-    /// Data dir
+    /// Data path
     #[arg(short, long)]
-    pub data_dir: Option<String>,
+    pub data_path: Option<String>,
 
     /// If model is visual
     #[arg(long, default_value_t = false)]
@@ -61,4 +61,12 @@ impl EmbeddingArgs {
             ..self
         }
     }
+}
+
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+pub struct ShowModelsArgs {
+    /// Data path
+    #[arg(short, long)]
+    pub data_path: Option<String>,
 }

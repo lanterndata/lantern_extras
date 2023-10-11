@@ -12,5 +12,8 @@ fn main() {
         cli::Commands::CreateEmbeddings(args) => {
             lantern_embeddings::create_embeddings_from_db(args).unwrap();
         }
+        cli::Commands::ShowModels(args) => {
+            lantern_embeddings::show_available_models(args);
+        }
     }
 }

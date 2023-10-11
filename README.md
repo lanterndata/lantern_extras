@@ -161,7 +161,7 @@ The index should be created from the same database on which it will be loaded, s
 
 ## Description
 
-This is a CLI application that creates vector embeddings from your postgres data.
+This is a CLI application that generates vector embeddings from your postgres data.
 
 ## How to use
 
@@ -172,3 +172,44 @@ Run `cargo install --path lantern_cli` to install the binary
 ### Usage
 
 Run `lantern-cli create-embeddings --help` to show the cli options.
+Run `lantern-cli show-models` to show available models.
+
+### Text Embedding Example
+
+1. Create table with text data
+
+```sql
+CREATE TABLE articles (id SERIAL, description TEXT, embedding REAL[]);
+INSERT INTO articles SELECT generate_series(0,999), 'My description column!';
+```
+
+> Currently it is requried for table to have id column, so it could map the embedding with row when exporting output.
+
+2. Run embedding generation
+
+```bash
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "articles" --column "description" --out-column "embedding" --pk "id"
+```
+
+> The output database, table and column names can be specified via `--out-table`, `--out-uri`, `--out-column` arguments. Check `help` for more info.
+
+or you can export to csv file
+
+```bash
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://varikmatevosyan:postgres@localhost:5432/testlive' --table "articles" --column "description" --out-column embedding --out-csv "embeddings.csv" --pk "id"
+```
+
+### Image Embedding Example
+
+1. Create table with image uris data
+
+```sql
+CREATE TABLE images (id SERIAL, url TEXT, embedding REAL[]);
+INSERT INTO images (url) VALUES ('https://cdn.pixabay.com/photo/2014/11/30/14/11/cat-551554_1280.jpg'), ('https://cdn.pixabay.com/photo/2016/12/13/05/15/puppy-1903313_1280.jpg');
+```
+
+2. Run embedding generation
+
+```bash
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --visual true
+```

@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use lantern_create_index::cli::CreateIndexArgs;
-use lantern_embeddings::cli::EmbeddingArgs;
+use lantern_embeddings::cli::{EmbeddingArgs, ShowModelsArgs};
 
 #[derive(Subcommand, Debug)]
 pub enum Commands {
@@ -8,6 +8,8 @@ pub enum Commands {
     CreateIndex(CreateIndexArgs),
     /// Create embeddings
     CreateEmbeddings(EmbeddingArgs),
+    /// Show embedding models
+    ShowModels(ShowModelsArgs),
 }
 
 #[derive(Parser, Debug)]
