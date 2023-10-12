@@ -73,13 +73,19 @@ fn embedding_worker(
     let mut count: u64 = 0;
 
     let handle = std::thread::spawn(move || {
+        let mut start = Instant::now();
         loop {
             let rows = rx.recv();
             if rows.is_err() {
                 // channel has been closed
                 break;
             }
-            let start = Instant::now();
+
+            if count == 0 {
+                // mark exact start time
+                start = Instant::now();
+            }
+
             let rows = rows.unwrap();
             let mut input_vectors = Vec::with_capacity(rows.len());
 
@@ -101,13 +107,15 @@ fn embedding_worker(
 
             let response_embeddings = response_embeddings.unwrap();
 
-            let batch_size = response_embeddings.len() as u64;
             count += response_embeddings.len() as u64;
 
+            let duration = start.elapsed().as_secs();
+            // avoid division by zero error
+            let duration = if duration > 0 { duration } else { 1 };
             println!(
                 "[*] Generated {} embeddings - speed {} emb/s",
                 count,
-                batch_size / start.elapsed().as_secs()
+                count / duration
             );
 
             let mut response_data = Vec::with_capacity(rows.len());
@@ -118,6 +126,7 @@ fn embedding_worker(
             }
             tx.send(response_data).unwrap();
         }
+        println!("[*] Embedding generation finished, waiting to export results...");
         drop(tx);
     });
 
@@ -185,6 +194,10 @@ fn db_exporter_worker(
             )
             .unwrap();
         transaction.commit().unwrap();
+        println!(
+            "[*] Embeddings exported to table {} under column {}",
+            &table, &column
+        );
     });
 
     return Ok(handle);
@@ -219,6 +232,7 @@ fn csv_exporter_worker(
             }
         }
         wtr.flush().unwrap();
+        println!("[*] Embeddings exported to {}", &csv_path);
     });
 
     return Ok(handle);
