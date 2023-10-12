@@ -425,9 +425,22 @@ pub mod clip {
 
     async fn get_image_buffer(path_or_url: &str) -> Result<Vec<u8>, anyhow::Error> {
         if let Ok(url) = Url::parse(path_or_url) {
-            return Ok(reqwest::get(url).await?.bytes().await?.to_vec());
+            let response = reqwest::get(url).await;
+
+            if let Err(e) = response {
+                anyhow::bail!(
+                    "[X] Error while downloading image \"{}\" - {}",
+                    path_or_url,
+                    e
+                );
+            }
+            return Ok(response.unwrap().bytes().await?.to_vec());
         } else {
-            return Ok(fs::read(path_or_url).await?);
+            let response = fs::read(path_or_url).await;
+            if let Err(e) = response {
+                anyhow::bail!("[X] Error while reading file \"{}\" - {}", path_or_url, e);
+            }
+            return Ok(response.unwrap());
         }
     }
 
@@ -449,13 +462,21 @@ pub mod clip {
             paths_or_urls.len()
         ));
 
-        threaded_rt.block_on(async {
+        let runtime_result = threaded_rt.block_on(async {
             let mut tasks = futures::stream::iter(tasks).buffered(chunk_size);
             while let Some(result) = tasks.next().await {
                 let mut buffers = buffers.lock().unwrap();
+                if let Err(e) = result {
+                    anyhow::bail!("{}", e);
+                }
                 buffers.push(result.unwrap());
             }
+            Ok::<(), anyhow::Error>(())
         });
+
+        if let Err(e) = runtime_result {
+            anyhow::bail!("{}", e);
+        }
 
         logger("[*] All images read into buffer");
         let buffers = buffers.lock().unwrap();
