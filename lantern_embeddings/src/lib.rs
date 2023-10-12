@@ -1,5 +1,7 @@
 use csv::Writer;
 use lantern_embeddings_core::clip;
+use rand::Rng;
+use std::io::Write;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::thread::JoinHandle;
@@ -68,7 +70,6 @@ fn embedding_worker(
     let is_visual = args.visual.clone();
     let model = args.model.clone();
     let data_path = args.data_path.clone();
-    let start = Instant::now();
     let mut count: u64 = 0;
 
     let handle = std::thread::spawn(move || {
@@ -78,6 +79,7 @@ fn embedding_worker(
                 // channel has been closed
                 break;
             }
+            let start = Instant::now();
             let rows = rows.unwrap();
             let mut input_vectors = Vec::with_capacity(rows.len());
 
@@ -99,19 +101,19 @@ fn embedding_worker(
 
             let response_embeddings = response_embeddings.unwrap();
 
+            let batch_size = response_embeddings.len() as u64;
             count += response_embeddings.len() as u64;
 
             println!(
                 "[*] Generated {} embeddings - speed {} emb/s",
                 count,
-                count / start.elapsed().as_secs()
+                batch_size / start.elapsed().as_secs()
             );
 
             let mut response_data = Vec::with_capacity(rows.len());
 
             for (i, embedding) in response_embeddings.iter().enumerate() {
                 let id: i32 = rows[i].get(0);
-                // TODO fix clone
                 response_data.push((id, embedding.clone()));
             }
             tx.send(response_data).unwrap();
@@ -133,6 +135,23 @@ fn db_exporter_worker(
 
     let handle = std::thread::spawn(move || {
         let mut client = Client::connect(&uri, NoTls).unwrap();
+        let mut transaction = client.transaction().unwrap();
+        let mut rng = rand::thread_rng();
+        let temp_table_name = format!("_lantern_tmp_{}", rng.gen_range(0..1000));
+
+        transaction
+            .execute(
+                &format!(
+                    "CREATE TEMPORARY TABLE {} (\"{}\" INT PRIMARY KEY, \"{}\" REAL[])",
+                    &temp_table_name, &pk, &column
+                ),
+                &[],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
+        let mut transaction = client.transaction().unwrap();
+        let writer = transaction.copy_in(&format!("COPY {} FROM stdin", &temp_table_name));
+        let mut writer = writer.unwrap();
         loop {
             let rows = rx.recv();
             if rows.is_err() {
@@ -141,17 +160,31 @@ fn db_exporter_worker(
             }
             let rows = rows.unwrap();
             for row in &rows {
-                client
-                    .execute(
-                        &format!(
-                            "UPDATE \"{}\" SET \"{}\"=$1 WHERE \"{}\"=$2",
-                            &table, &column, &pk
-                        ),
-                        &[&row.1, &row.0],
-                    )
-                    .unwrap();
+                let vector_string = &format!(
+                    "{{{}}}",
+                    row.1
+                        .iter()
+                        .map(|f| f.to_string())
+                        .collect::<Vec<String>>()
+                        .join(",")
+                );
+                let row_str = format!("{}\t{}\n", row.0.to_string(), vector_string);
+                writer.write_all(row_str.as_bytes()).unwrap();
             }
         }
+
+        writer.flush().unwrap();
+        writer.finish().unwrap();
+        transaction
+            .execute(
+                &format!(
+                "UPDATE {} dest SET \"{}\" = src.\"{}\" FROM {} src WHERE src.\"{}\" = dest.\"{}\"",
+                &table, &column, &column, &temp_table_name, &pk, &pk
+            ),
+                &[],
+            )
+            .unwrap();
+        transaction.commit().unwrap();
     });
 
     return Ok(handle);
@@ -174,14 +207,13 @@ fn csv_exporter_worker(
             let rows = rows.unwrap();
             for row in &rows {
                 let vector_string = &format!(
-                    "[{}]",
+                    "{{{}}}",
                     row.1
                         .iter()
                         .map(|f| f.to_string())
                         .collect::<Vec<String>>()
                         .join(",")
                 );
-                // TODO this may consume lots of memory
                 wtr.write_record(&[&row.0.to_string(), vector_string])
                     .unwrap();
             }
