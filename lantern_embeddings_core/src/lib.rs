@@ -178,11 +178,12 @@ impl EncoderService {
         let embeddings = binding.view();
 
         let seq_len = embeddings.shape().get(1).ok_or("not")?;
+        let output_dims = session.outputs[0].dimensions.last().unwrap().unwrap() as usize;
 
         Ok(embeddings
             .iter()
             .map(|s| *s)
-            .chunks(*seq_len)
+            .chunks(*seq_len * output_dims)
             .into_iter()
             .map(|b| b.collect())
             .collect())
