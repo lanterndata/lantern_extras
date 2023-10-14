@@ -78,6 +78,10 @@ export ORT_STRATEGY=system
 export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime/lib/libonnxruntime.so
 ```
 
+In some systems you will need to specify `dlopen` search path, so the extension could load `ort` inside postgres.
+
+To do that create a file `/etc/ld.so.conf.d/onnx.conf` with content `/usr/local/lib/onnxruntime/lib`
+
 This extension is written in Rust so requires Rust toolchain. Make sure Rust toolchain is installed before continuing
 The extension also uses `pgrx`. If pgrx is not already installed, use the following commands to install it:
 
@@ -87,7 +91,7 @@ sudo apt install pkg-config libssl-dev zlib1g-dev libreadline-dev
 sudo apt-get install clang
 
 #install pgrx itself
-cargo install --locked cargo-pgrx=v0.9.7
+cargo install --locked cargo-pgrx --version 0.9.7
 cargo pgrx init
 ```
 
