@@ -3,7 +3,7 @@ use image::imageops::FilterType;
 use image::io::Reader as ImageReader;
 use image::GenericImageView;
 use itertools::Itertools;
-use ndarray::{Array2, Array4, CowArray, Dim};
+use ndarray::{s, Array2, Array4, CowArray, Dim};
 use ort::session::Session;
 use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value};
 use std::collections::HashMap;
@@ -176,14 +176,14 @@ impl EncoderService {
 
         let binding = outputs[0].try_extract()?;
         let embeddings = binding.view();
-
-        let seq_len = embeddings.shape().get(1).ok_or("not")?;
+        let embeddings = embeddings.slice(s![.., 0, ..]);
+        let embeddings: Vec<f32> = embeddings.iter().map(|s| *s).collect();
         let output_dims = session.outputs[0].dimensions.last().unwrap().unwrap() as usize;
 
         Ok(embeddings
             .iter()
             .map(|s| *s)
-            .chunks(*seq_len * output_dims)
+            .chunks(output_dims)
             .into_iter()
             .map(|b| b.collect())
             .collect())
