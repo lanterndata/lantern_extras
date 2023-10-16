@@ -28,10 +28,16 @@ fn producer_worker(
         let mut client = Client::connect(&uri, NoTls).unwrap();
         let mut transaction = client.transaction().unwrap();
         let rows = transaction
-            .query(&format!("SELECT COUNT(\"{}\") FROM {};", pk, table), &[])
+            .query(
+                &format!(
+                    "SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid ='{}'::regclass",
+                    table
+                ),
+                &[],
+            )
             .unwrap();
         let count: i64 = rows[0].get(0);
-        println!("[*] Found {} items in table \"{}\"", count, table);
+        println!("[*] Found approximately {} items in table \"{}\"", count, table);
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction
             .bind(
