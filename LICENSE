@@ -3,14 +3,14 @@ License text copyright (c) 2020 MariaDB Corporation Ab, All Rights Reserved.
 
 Parameters
 
-Licensor: Lantern Systems, Inc.
-Licensed Work: Lantern Extras. The Licensed Work is (c) 2023 Lantern Systems, Inc.
+Licensor:             Lantern Systems, Inc.
+Licensed Work:        Lantern Extras. The Licensed Work is (c) 2023 Lantern Systems, Inc.
 Additional Use Grant: You may make production use of the Licensed Work,
-provided such use does not include offering the Licensed Work
-to third parties on a hosted or embedded basis which is
-competitive with Lantern Systems, Inc. products.
-Change Date: Four years from the date the Licensed Work is published.
-Change License: MPL 2.0
+                      provided such use does not include offering the Licensed Work
+                      to third parties on a hosted or embedded basis which is
+                      competitive with Lantern Systems, Inc. products.
+Change Date:          Four years from the date the Licensed Work is published.
+Change License:       MPL 2.0
 
 For information about alternative licensing arrangements for the Licensed Work,
 please contact support@lantern.dev.
