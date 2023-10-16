@@ -15,6 +15,10 @@ pub struct EmbeddingArgs {
     #[arg(short, long)]
     pub table: String,
 
+    /// Schema name
+    #[arg(short, long, default_value = "public")]
+    pub schema: String,
+
     /// Table primary key column name
     #[arg(short, long, default_value = "id")]
     pub pk: String,

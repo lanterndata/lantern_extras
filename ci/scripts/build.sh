@@ -71,7 +71,7 @@ function package_extension() {
   source "$(dirname "$0")/get_arch_and_platform.sh"
 
   EXT_VERSION=$(cargo metadata --format-version 1 | jq '.packages[] | select( .name == "lantern_extras") | .version' | tr -d '"')
-  PACKAGE_NAME=lantern--extras-${EXT_VERSION}-postgres-${PG_VERSION}-${PLATFORM}-${ARCH}
+  PACKAGE_NAME=lantern-extras-${EXT_VERSION}-postgres-${PG_VERSION}-${PLATFORM}-${ARCH}
 
   SOURCE_DIR=$(pwd)
   LIB_BUILD_DIR="$(pwd)/target/release/lantern_extras-pg${PG_VERSION}/usr/lib/postgresql/${PG_VERSION}/lib"

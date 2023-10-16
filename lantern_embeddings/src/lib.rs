@@ -12,7 +12,7 @@ use postgres::{Client, NoTls, Row};
 
 pub mod cli;
 
-type EmbeddingRecord = (i32, Vec<f32>);
+type EmbeddingRecord = (String, Vec<f32>);
 
 fn producer_worker(
     args: &cli::EmbeddingArgs,
@@ -21,6 +21,7 @@ fn producer_worker(
     let uri = args.uri.clone();
     let pk = args.pk.clone();
     let column = args.column.clone();
+    let schema = args.schema.clone();
     let table = args.table.clone();
     let batch_size = args.batch_size.clone();
 
@@ -29,7 +30,7 @@ fn producer_worker(
         let mut transaction = client.transaction().unwrap();
         let rows = transaction
             .query(
-                &format!("SELECT COUNT(\"{}\") FROM \"{}\";", pk, table),
+                &format!("SELECT COUNT(\"{pk}\") FROM \"{schema}\".\"{table}\""),
                 &[],
             )
             .unwrap();
@@ -38,7 +39,7 @@ fn producer_worker(
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction
             .bind(
-                &format!("SELECT \"{}\", \"{}\" FROM \"{}\";", pk, column, table),
+                &format!("SELECT \"{pk}\"::text, \"{column}\" FROM \"{schema}\".\"{table}\";"),
                 &[],
             )
             .unwrap();
@@ -121,7 +122,7 @@ fn embedding_worker(
             let mut response_data = Vec::with_capacity(rows.len());
 
             for (i, embedding) in response_embeddings.iter().enumerate() {
-                let id: i32 = rows[i].get(0);
+                let id: String = rows[i].get(0);
                 response_data.push((id, embedding.clone()));
             }
             tx.send(response_data).unwrap();
@@ -141,6 +142,7 @@ fn db_exporter_worker(
     let pk = args.pk.clone();
     let column = args.out_column.clone();
     let table = args.out_table.clone().unwrap_or(args.table.clone());
+    let schema = args.schema.clone();
 
     let handle = std::thread::spawn(move || {
         let mut client = Client::connect(&uri, NoTls).unwrap();
@@ -151,15 +153,14 @@ fn db_exporter_worker(
         transaction
             .execute(
                 &format!(
-                    "CREATE TEMPORARY TABLE {} (\"{}\" INT PRIMARY KEY, \"{}\" REAL[])",
-                    &temp_table_name, &pk, &column
+                    "CREATE TEMPORARY TABLE {temp_table_name} AS SELECT \"{pk}\", '{{}}'::REAL[] AS \"{column}\" FROM \"{schema}\".\"{table}\" LIMIT 0"
                 ),
                 &[],
             )
             .unwrap();
         transaction.commit().unwrap();
         let mut transaction = client.transaction().unwrap();
-        let writer = transaction.copy_in(&format!("COPY {} FROM stdin", &temp_table_name));
+        let writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"));
         let mut writer = writer.unwrap();
         loop {
             let rows = rx.recv();
@@ -187,8 +188,15 @@ fn db_exporter_worker(
         transaction
             .execute(
                 &format!(
-                "UPDATE {} dest SET \"{}\" = src.\"{}\" FROM {} src WHERE src.\"{}\" = dest.\"{}\"",
-                &table, &column, &column, &temp_table_name, &pk, &pk
+                    "ALTER TABLE \"{schema}\".\"{table}\" ADD COLUMN IF NOT EXISTS \"{column}\" REAL[]"
+                ),
+                &[],
+            )
+            .unwrap();
+        transaction
+            .execute(
+                &format!(
+                "UPDATE \"{schema}\".\"{table}\" dest SET \"{column}\" = src.\"{column}\" FROM \"{temp_table_name}\" src WHERE src.\"{pk}\" = dest.\"{pk}\""
             ),
                 &[],
             )
