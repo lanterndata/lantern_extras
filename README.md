@@ -80,7 +80,7 @@ export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime/lib/libonnxruntime.so
 
 In some systems you will need to specify `dlopen` search path, so the extension could load `ort` inside postgres.
 
-To do that create a file `/etc/ld.so.conf.d/onnx.conf` with content `/usr/local/lib/onnxruntime/lib`
+To do that create a file `/etc/ld.so.conf.d/onnx.conf` with content `/usr/local/lib/onnxruntime/lib` and run `ldconfig`
 
 This extension is written in Rust so requires Rust toolchain. Make sure Rust toolchain is installed before continuing
 The extension also uses `pgrx`. If pgrx is not already installed, use the following commands to install it:
@@ -192,7 +192,7 @@ INSERT INTO articles SELECT generate_series(0,999), 'My description column!';
 2. Run embedding generation
 
 ```bash
-lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "articles" --column "description" --out-column "embedding" --pk "id"
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "articles" --column "description" --out-column "embedding" --pk "id" --schema "public"
 ```
 
 > The output database, table and column names can be specified via `--out-table`, `--out-uri`, `--out-column` arguments. Check `help` for more info.
@@ -200,7 +200,7 @@ lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresq
 or you can export to csv file
 
 ```bash
-lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://varikmatevosyan:postgres@localhost:5432/testlive' --table "articles" --column "description" --out-column embedding --out-csv "embeddings.csv" --pk "id"
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://varikmatevosyan:postgres@localhost:5432/testlive' --table "articles" --column "description" --out-column embedding --out-csv "embeddings.csv" --pk "id" --schema "public"
 ```
 
 ### Image Embedding Example
@@ -215,5 +215,5 @@ INSERT INTO images (url) VALUES ('https://cdn.pixabay.com/photo/2014/11/30/14/11
 2. Run embedding generation
 
 ```bash
-lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --visual
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --schema "public" --visual
 ```
