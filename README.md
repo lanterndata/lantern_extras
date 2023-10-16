@@ -200,7 +200,7 @@ lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresq
 or you can export to csv file
 
 ```bash
-lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://varikmatevosyan:postgres@localhost:5432/testlive' --table "articles" --column "description" --out-column embedding --out-csv "embeddings.csv" --pk "id" --schema "public"
+lantern-cli create-embeddings  --model 'clip/ViT-B-32-textual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "articles" --column "description" --out-column embedding --out-csv "embeddings.csv" --pk "id" --schema "public"
 ```
 
 ### Image Embedding Example
