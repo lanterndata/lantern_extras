@@ -4,23 +4,6 @@ function setup_environment() {
   export DEBIAN_FRONTEND=noninteractive
   export PG_VERSION=${PG_VERSION:-15}
   export GITHUB_OUTPUT=${GITHUB_OUTPUT:-/dev/null}
-  export ORT_STRATEGY=system
-  export ORT_DYLIB_PATH=/usr/local/lib/onnxruntime
-}
-
-function install_onnx_runtime(){
-  PACKAGE_URL="https://github.com/microsoft/onnxruntime/releases/download/v1.15.1/onnxruntime-linux-x64-1.15.1.tgz"
-  if [[ $ARCH == *"arm"* ]]; then
-    PACKAGE_URL="https://github.com/microsoft/onnxruntime/releases/download/v1.15.1/onnxruntime-linux-aarch64-1.15.1.tgz"
-  fi
-
-  mkdir -p /usr/local/lib
-  pushd /usr/local/lib
-  wget $PACKAGE_URL && \
-  tar xzf ./onnx*.tgz && \
-  rm -rf ./onnx*.tgz && \
-  mv ./onnx* ./onnxruntime && \
-  popd
 }
 
 function setup_locale_and_install_packages() {
@@ -58,7 +41,6 @@ function setup_cargo_deps() {
   	mkdir .cargo
   fi
   echo "[target.$(rustc -vV | sed -n 's|host: ||p')]" >> .cargo/config
-  echo 'rustflags = ["-C", "link-args=-Wl,-rpath,/usr/local/lib/onnxruntime/lib"]' >> .cargo/config
   cargo install cargo-pgrx --version 0.9.7
   cargo pgrx init "--pg$PG_VERSION" /usr/bin/pg_config
 }
@@ -86,18 +68,24 @@ function package_cli() {
 
 function package_extension() {
   cargo pgrx package --pg-config /usr/bin/pg_config --package lantern_extras
+  source "$(dirname "$0")/get_arch_and_platform.sh"
 
   EXT_VERSION=$(cargo metadata --format-version 1 | jq '.packages[] | select( .name == "lantern_extras") | .version' | tr -d '"')
-  PACKAGE_NAME=lantern-extras-${EXT_VERSION}-postgres-${PG_VERSION}-${ARCH}
+  PACKAGE_NAME=lantern--extras-${EXT_VERSION}-postgres-${PG_VERSION}-${PLATFORM}-${ARCH}
 
   SOURCE_DIR=$(pwd)
   LIB_BUILD_DIR="$(pwd)/target/release/lantern_extras-pg${PG_VERSION}/usr/lib/postgresql/${PG_VERSION}/lib"
   SHARE_BUILD_DIR="$(pwd)/target/release/lantern_extras-pg${PG_VERSION}/usr/share/postgresql/${PG_VERSION}/extension"
   OUT_DIR=/tmp/lantern-extras
+  
   mkdir -p ${OUT_DIR}/${PACKAGE_NAME}/src
 
+  # For Mac OS and Postgres 16 the module will have .dylib extension
+  # Instead of .so, so any of the files may not exist
+  # So we will ignore the error from cp command
+  cp ${LIB_BUILD_DIR}/*.{so,dylib} ${OUT_DIR}/${PACKAGE_NAME}/src 2>/dev/null || true
+  
   cp ${SOURCE_DIR}/scripts/packaging/* ${OUT_DIR}/${PACKAGE_NAME}/
-  cp ${LIB_BUILD_DIR}/*.so ${OUT_DIR}/${PACKAGE_NAME}/src
   cp ${SHARE_BUILD_DIR}/*.sql ${OUT_DIR}/${PACKAGE_NAME}/src
   cp ${SHARE_BUILD_DIR}/*.control ${OUT_DIR}/${PACKAGE_NAME}/src
 
@@ -118,7 +106,6 @@ then
  package_cli
 else
  setup_postgres && \
- install_onnx_runtime && \
  setup_cargo_deps && \
  package_extension
 fi

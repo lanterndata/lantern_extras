@@ -12,9 +12,10 @@ mkdir $OUTPUT_DIR
 cd $PACKAGE_DIR
 for f in $(find "." -name "*.tar"); do
     current_archive_name=$(echo $f | sed -E 's#(.*).tar#\1#')   
-    current_pg_version=$(echo $current_archive_name | sed -E 's#(.*)-postgres-(.*)-(.*)#\2#')   
-    current_arch=$(echo $current_archive_name | sed -E 's#(.*)-postgres-(.*)-(.*)#\3#')   
-    current_dest_folder=${OUTPUT_DIR}/src/${current_arch}/${current_pg_version}
+    current_pg_version=$(echo $current_archive_name | sed -E 's#(.*)-postgres-(.*)-(.*)-(.*)#\2#')   
+    current_platform=$(echo $current_archive_name | sed -E 's#(.*)-postgres-(.*)-(.*)-(.*)#\3#')
+    current_arch=$(echo $current_archive_name | sed -E 's#(.*)-postgres-(.*)-(.*)-(.*)#\4#')   
+    current_dest_folder=${OUTPUT_DIR}/src/${current_arch}/${current_platform}/${current_pg_version}
 
     tar xf $f
 
@@ -28,7 +29,7 @@ for f in $(find "." -name "*.tar"); do
     fi
 
     mkdir -p $current_dest_folder
-    cp $current_archive_name/src/*.so $current_dest_folder/
+    cp $current_archive_name/src/*.{so,dylib} $current_dest_folder/ 2>/dev/null || true
 done
 
 cd /tmp && tar cf ${PACKAGE_NAME}.tar $PACKAGE_NAME
