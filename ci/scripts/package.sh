@@ -23,6 +23,8 @@ for f in $(find "." -name "*.tar"); do
       # Copying static files which does not depend to architecture and pg version only once
       mkdir -p $SHARED_DIR
       cp $current_archive_name/Makefile $OUTPUT_DIR/
+      cp $current_archive_name/README.md $OUTPUT_DIR/
+      cp $current_archive_name/LICENSE $OUTPUT_DIR/ 2>/dev/null || true
       cp $current_archive_name/*.sh $OUTPUT_DIR/
       cp $current_archive_name/src/*.sql $SHARED_DIR/
       cp $current_archive_name/src/*.control $SHARED_DIR/
