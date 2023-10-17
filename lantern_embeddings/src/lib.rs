@@ -31,17 +31,20 @@ fn producer_worker(
         let rows = transaction
             .query(
                 &format!(
-                    "SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid ='{}'::regclass",
-                    table
+                    "SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid ='\"{schema}\".\"{table}\"'::regclass"
                 ),
                 &[],
             )
             .unwrap();
         let count: i64 = rows[0].get(0);
-        println!(
-            "[*] Found approximately {} items in table \"{}\"",
-            count, table
-        );
+        if count > 0 {
+            println!(
+                "[*] Found approximately {} items in table \"{}\"",
+                count, table
+            );
+        } else {
+            println!("[-] Could not estimate table size");
+        }
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction
             .bind(
@@ -96,10 +99,18 @@ fn embedding_worker(
 
             let rows = rows.unwrap();
             let mut input_vectors = Vec::with_capacity(rows.len());
+            let mut input_ids = Vec::with_capacity(rows.len());
 
             for row in &rows {
-                let col: &str = row.get(1);
-                input_vectors.push(col);
+                let col: Option<&str> = row.get(1);
+                if col.is_some() {
+                    input_vectors.push(col.unwrap());
+                    input_ids.push(row.get::<usize, String>(0));
+                }
+            }
+
+            if input_vectors.len() == 0 {
+                continue;
             }
 
             let response_embeddings = if is_visual {
@@ -128,8 +139,7 @@ fn embedding_worker(
             let mut response_data = Vec::with_capacity(rows.len());
 
             for (i, embedding) in response_embeddings.iter().enumerate() {
-                let id: String = rows[i].get(0);
-                response_data.push((id, embedding.clone()));
+                response_data.push((input_ids[i].clone(), embedding.clone()));
             }
             tx.send(response_data).unwrap();
         }
