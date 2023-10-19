@@ -1,9 +1,10 @@
 use csv::Writer;
 use lantern_embeddings_core::clip;
+use lantern_logger::{LogLevel, Logger};
 use rand::Rng;
 use std::io::Write;
-use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
+use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{panic, process};
@@ -22,6 +23,7 @@ type AnyhowVoidResult = Result<(), anyhow::Error>;
 fn producer_worker(
     args: &cli::EmbeddingArgs,
     tx: Sender<Vec<Row>>,
+    logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let uri = args.uri.clone();
     let pk = args.pk.clone();
@@ -42,12 +44,12 @@ fn producer_worker(
             )?;
         let count: i64 = rows[0].get(0);
         if count > 0 {
-            println!(
-                "[*] Found approximately {} items in table \"{}\"",
-                count, table
-            );
+            logger.info(&format!(
+                "Found approximately {} items in table \"{}\"",
+                count, table,
+            ));
         } else {
-            println!("[-] Could not estimate table size");
+            logger.warn("Could not estimate table size");
         }
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction.bind(
@@ -83,6 +85,7 @@ fn embedding_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<Row>>,
     tx: Sender<Vec<EmbeddingRecord>>,
+    logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let is_visual = args.visual.clone();
     let model = args.model.clone();
@@ -136,11 +139,11 @@ fn embedding_worker(
             let duration = start.elapsed().as_secs();
             // avoid division by zero error
             let duration = if duration > 0 { duration } else { 1 };
-            println!(
-                "[*] Generated {} embeddings - speed {} emb/s",
+            logger.debug(&format!(
+                "Generated {} embeddings - speed {} emb/s",
                 count,
                 count / duration
-            );
+            ));
 
             let mut response_data = Vec::with_capacity(rows.len());
 
@@ -149,7 +152,7 @@ fn embedding_worker(
             }
             tx.send(response_data).unwrap();
         }
-        println!("[*] Embedding generation finished, waiting to export results...");
+        logger.info("Embedding generation finished, waiting to export results...");
         drop(tx);
         Ok(())
     });
@@ -166,6 +169,7 @@ fn embedding_worker(
 fn db_exporter_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<EmbeddingRecord>>,
+    logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let uri = args.out_uri.clone().unwrap_or(args.uri.clone());
     let pk = args.pk.clone();
@@ -237,10 +241,10 @@ fn db_exporter_worker(
                 &[],
             )?;
         transaction.commit()?;
-        println!(
-            "[*] Embeddings exported to table {} under column {}",
+        logger.info(&format!(
+            "Embeddings exported to table {} under column {}",
             &table, &column
-        );
+        ));
         Ok(())
     });
 
@@ -250,6 +254,7 @@ fn db_exporter_worker(
 fn csv_exporter_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<EmbeddingRecord>>,
+    logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
     let csv_path = args.out_csv.clone().unwrap();
     let handle = std::thread::spawn(move || {
@@ -276,24 +281,29 @@ fn csv_exporter_worker(
             }
         }
         wtr.flush().unwrap();
-        println!("[*] Embeddings exported to {}", &csv_path);
+        logger.info(&format!("Embeddings exported to {}", &csv_path));
         Ok(())
     });
 
     return Ok(handle);
 }
 
-pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow::Error> {
-    println!("[*] Lantern CLI - Create Embeddings");
-    println!(
-        "[*] Model - {}, Visual - {}, Batch Size - {}",
+pub fn create_embeddings_from_db(
+    args: &cli::EmbeddingArgs,
+    logger: Option<Logger>,
+) -> Result<(), anyhow::Error> {
+    let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Embeddings", LogLevel::Debug)));
+    logger.info("Lantern CLI - Create Embeddings");
+    logger.debug(&format!(
+        "Model - {}, Visual - {}, Batch Size - {}",
         args.model, args.visual, args.batch_size
-    );
+    ));
 
     // Exit process if any of the threads panic
     // This should never happen as thread results are handled below
+    let process_hook_logger = logger.clone();
     panic::set_hook(Box::new(move |panic_info| {
-        eprintln!("{}", panic_info);
+        process_hook_logger.error(&format!("{}", panic_info));
         process::exit(1);
     }));
 
@@ -307,21 +317,21 @@ pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow
     // Create exporter based on provided args
     // For now we only have csv and db exporters
     let exporter_handle = if args.out_csv.is_some() {
-        csv_exporter_worker(args, embedding_rx)?
+        csv_exporter_worker(args, embedding_rx, logger.clone())?
     } else {
-        db_exporter_worker(args, embedding_rx)?
+        db_exporter_worker(args, embedding_rx, logger.clone())?
     };
 
     // Collect the thread handles in a vector to wait them
     let handles = vec![
-        producer_worker(args, producer_tx)?,
-        embedding_worker(args, producer_rx, embedding_tx)?,
+        producer_worker(args, producer_tx, logger.clone())?,
+        embedding_worker(args, producer_rx, embedding_tx, logger.clone())?,
         exporter_handle,
     ];
 
     for handle in handles {
         if let Err(e) = handle.join().unwrap() {
-            println!("[X] {}", e);
+            logger.error(&format!("{}", e));
             anyhow::bail!("{}", e);
         }
     }
@@ -330,6 +340,7 @@ pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow
 }
 
 pub fn show_available_models(args: &cli::ShowModelsArgs) {
-    println!("[*] Lantern CLI - Available Models\n");
-    println!("{}", clip::get_available_models(args.data_path.as_deref()));
+    let logger = Logger::new("Lantern Embeddings", LogLevel::Info);
+    logger.info("Lantern CLI - Available Models\n");
+    logger.info(&clip::get_available_models(args.data_path.as_deref()));
 }

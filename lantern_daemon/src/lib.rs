@@ -1,5 +1,6 @@
 use futures::{future, Future, StreamExt};
 use lantern_embeddings::cli::EmbeddingArgs;
+use lantern_logger::{LogLevel, Logger};
 use std::ops::Deref;
 use std::path::Path;
 use std::pin::Pin;
@@ -53,6 +54,7 @@ async fn db_notification_listener(
     db_uri: String,
     notification_channel: &'static str,
     queue_tx: Sender<String>,
+    logger: Arc<Logger>,
 ) -> Result<(), anyhow::Error> {
     let (client, mut connection) = tokio_postgres::connect(&db_uri, tokio_postgres::NoTls).await?;
 
@@ -61,11 +63,11 @@ async fn db_notification_listener(
     // spawn new task to handle notifications
     let task = tokio::spawn(async move {
         let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
-        println!("[*] Lisening for notifications");
+        logger.info("Lisening for notifications");
 
         while let Some(message) = stream.next().await {
             if let Err(e) = &message {
-                eprintln!("[X] Failed to get message from db: {}", e);
+                logger.error(&format!("Failed to get message from db: {}", e));
             }
 
             let message = message.unwrap();
@@ -90,20 +92,23 @@ async fn embedding_worker(
     client: Arc<Client>,
     schema: String,
     table: String,
+    log_level: LogLevel,
     data_path: String,
+    logger: Arc<Logger>,
 ) -> Result<(), anyhow::Error> {
     let schema = Arc::new(schema);
     let table = Arc::new(table);
 
     tokio::spawn(async move {
-        println!("[*] Embedding worker started");
+        logger.info("Embedding worker started");
         while let Some(job) = job_queue_rx.recv().await {
-            println!("[*] Starting execution of job {}", job.id);
+            logger.info(&format!("Starting execution of job {}", job.id));
             let client_ref = client.clone();
             let schema_ref = schema.clone();
             let table_ref = table.clone();
             let data_path = data_path.clone();
 
+            let task_logger = Logger::new(&format!("Job {}", job.id), log_level.clone());
             let result = lantern_embeddings::create_embeddings_from_db(&EmbeddingArgs {
                 pk: String::from("id"),
                 model: job.model,
@@ -118,7 +123,7 @@ async fn embedding_worker(
                 data_path: Some(data_path),
                 visual: false,
                 out_csv: None,
-            });
+            }, Some(task_logger));
 
             let full_table_name = get_full_table_name(schema_ref.deref(), table_ref.deref());
             if let Err(e) = result {
@@ -143,8 +148,9 @@ async fn startup_hook(
     schema: &str,
     channel: &str,
     data_path: &str,
+    logger: Arc<Logger>,
 ) -> Result<(), anyhow::Error> {
-    println!("[*] Setting up environment");
+    logger.info("Setting up environment");
     // verify that table exists
     if let Err(_) = client
         .execute(
@@ -230,7 +236,8 @@ async fn job_queue_processor(
 
 #[tokio::main]
 pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
-    println!("[*] Lantern Daemon");
+    let logger = Arc::new(Logger::new("Lantern Daemon", args.log_level.value()));
+    logger.info("Staring Daemon");
 
     let (main_db_client, connection) = tokio_postgres::connect(&args.uri, NoTls).await?;
 
@@ -250,6 +257,7 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
         &args.schema,
         &notification_channel,
         &data_path,
+        logger.clone(),
     )
     .await?;
 
@@ -258,6 +266,7 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
             args.uri.clone(),
             &notification_channel,
             notification_queue_tx.clone(),
+            logger.clone(),
         )) as VoidFuture,
         Box::pin(job_queue_processor(
             main_db_client.clone(),
@@ -271,7 +280,9 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
             main_db_client.clone(),
             args.schema.clone(),
             args.table.clone(),
+            args.log_level.value(),
             data_path.to_owned(),
+            logger.clone(),
         )) as VoidFuture,
         Box::pin(collect_pending_jobs(
             main_db_client.clone(),
@@ -281,8 +292,8 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
     ];
 
     if let Err(e) = future::try_join_all(handles).await {
-        eprintln!("{}", e);
-        eprintln!("[X] Fatal error exiting process");
+        logger.error(&e.to_string());
+        logger.error("Fatal error exiting process");
         process::exit(1);
     }
 
