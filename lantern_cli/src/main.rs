@@ -8,7 +8,7 @@ fn main() {
     let cli = cli::Cli::parse();
     match cli.command {
         cli::Commands::CreateIndex(args) => {
-            lantern_create_index::create_usearch_index(&args).unwrap();
+            lantern_create_index::create_usearch_index(&args, None).unwrap();
         }
         cli::Commands::CreateEmbeddings(args) => {
             lantern_embeddings::create_embeddings_from_db(&args, None).unwrap();

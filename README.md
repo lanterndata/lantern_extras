@@ -217,3 +217,31 @@ INSERT INTO images (url) VALUES ('https://cdn.pixabay.com/photo/2014/11/30/14/11
 ```bash
 lantern-cli create-embeddings  --model 'clip/ViT-B-32-visual'  --uri 'postgresql://postgres:postgres@localhost:5432/test' --table "images" --column "url" --out-column "embedding" --pk "id" --schema "public" --visual
 ```
+
+### Daemon Mode
+
+Lantern CLI can be used in daemon mode to continousely listen to postgres table and generate embeddings.
+
+```bash
+ lantern-cli start-daemon --uri 'postgres://postgres@localhost:5432/postgres' --table lantern_jobs --schema public --log-level debug
+```
+
+This will set up trigger on specified table (`lantern_jobs`) and when new row will be inserted it will start embedding generation based on row data.
+The jobs table should have the following structure
+
+```sql
+ id SERIAL PRIMARY KEY,
+ db_connection TEXT,
+ schema TEXT,
+ "table" TEXT,
+ src_column TEXT,
+ dst_column TEXT,
+ embedding_model TEXT,
+ created_at TIMESTAMPTZ NOT NULL DEFAULT NOW (),
+ updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW (),
+ canceled_at TIMESTAMPTZ NOT NULL DEFAULT NOW (),
+ init_started_at TIMESTAMPTZ,
+ init_finished_at TIMESTAMPTZ,
+ init_failed_at TIMESTAMPTZ,
+ init_failure_reason TEXT
+```
