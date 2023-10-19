@@ -209,13 +209,11 @@ fn db_exporter_worker(
             for row in &rows {
                 writer.write(row.0.as_bytes())?;
                 writer.write("\t".as_bytes())?;
-                // convert vector to u8 bytes to avoid creating String and
-                // consuming unnecessary memory
-                let vec_bytes: &[u8] = unsafe {
-                    std::slice::from_raw_parts(row.1.as_ptr() as *const u8, row.1.len() * 4)
-                };
-
-                writer.write(vec_bytes)?;
+                writer.write("{".as_bytes())?;
+                let row_str: String = row.1.iter().map(|&x| x.to_string() + ",").collect();
+                writer.write(row_str[0..row_str.len() - 1].as_bytes())?;
+                drop(row_str);
+                writer.write("}".as_bytes())?;
                 writer.write("\n".as_bytes())?;
             }
             drop(rows);
