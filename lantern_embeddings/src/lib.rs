@@ -15,6 +15,10 @@ pub mod cli;
 type EmbeddingRecord = (String, Vec<f32>);
 type AnyhowVoidResult = Result<(), anyhow::Error>;
 
+// This function will do the following
+// 1. Get approximate number of rows from pg_class (this is just for info logging)
+// 2. Create transaction portal which will poll data from database of batch size provided via args
+// 3. Send the rows over the channel
 fn producer_worker(
     args: &cli::EmbeddingArgs,
     tx: Sender<Vec<Row>>,
@@ -70,6 +74,11 @@ fn producer_worker(
     return Ok(handle);
 }
 
+// Embedding worker will listen to the producer channel
+// and execute lantern_embeddings_core's corresponding function to generate embeddings
+// we will here map each vector to it's row id (pk) before sending the results over channel
+// So we will get Vec<Row<String, String> and output Vec<(String, Vec<f32>)> the output will
+// contain generated embeddings for the text. If text will be null we will skip that row
 fn embedding_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<Row>>,
@@ -95,8 +104,8 @@ fn embedding_worker(
             }
 
             let rows = rows.unwrap();
-            let mut input_vectors = Vec::with_capacity(rows.len());
-            let mut input_ids = Vec::with_capacity(rows.len());
+            let mut input_vectors: Vec<&str> = Vec::with_capacity(rows.len());
+            let mut input_ids: Vec<String> = Vec::with_capacity(rows.len());
 
             for row in &rows {
                 let col: Option<&str> = row.get(1);
@@ -120,7 +129,7 @@ fn embedding_worker(
                 anyhow::bail!("{}", e);
             }
 
-            let response_embeddings = response_embeddings.unwrap();
+            let mut response_embeddings = response_embeddings.unwrap();
 
             count += response_embeddings.len() as u64;
 
@@ -135,8 +144,8 @@ fn embedding_worker(
 
             let mut response_data = Vec::with_capacity(rows.len());
 
-            for (i, embedding) in response_embeddings.iter().enumerate() {
-                response_data.push((input_ids[i].clone(), embedding.clone()));
+            for _ in 0..response_embeddings.len() {
+                response_data.push((input_ids.pop().unwrap(), response_embeddings.pop().unwrap()));
             }
             tx.send(response_data).unwrap();
         }
@@ -148,6 +157,12 @@ fn embedding_worker(
     return Ok(handle);
 }
 
+// DB exporter worker will create temp table with name _lantern_tmp_${rand(0,1000)}
+// Then it will create writer stream which will COPY bytes from stdin to that table
+// After that it will receiver the output embeddings mapped with row ids over the channel
+// And write them using writer instance
+// At the end we will flush the writer commit the transaction and UPDATE destination table
+// Using our TEMP table data
 fn db_exporter_worker(
     args: &cli::EmbeddingArgs,
     rx: Receiver<Vec<EmbeddingRecord>>,
@@ -188,17 +203,18 @@ fn db_exporter_worker(
 
             let rows = rows.unwrap();
             for row in &rows {
-                let vector_string = &format!(
-                    "{{{}}}",
-                    row.1
-                        .iter()
-                        .map(|f| f.to_string())
-                        .collect::<Vec<String>>()
-                        .join(",")
-                );
-                let row_str = format!("{}\t{}\n", row.0.to_string(), vector_string);
-                writer.write_all(row_str.as_bytes())?;
+                writer.write(row.0.as_bytes())?;
+                writer.write("\t".as_bytes())?;
+                // convert vector to u8 bytes to avoid creating String and
+                // consuming unnecessary memory
+                let vec_bytes: &[u8] = unsafe {
+                    std::slice::from_raw_parts(row.1.as_ptr() as *const u8, row.1.len() * 4)
+                };
+
+                writer.write(vec_bytes)?;
+                writer.write("\n".as_bytes())?;
             }
+            drop(rows);
         }
 
         if !did_receive {
@@ -275,23 +291,28 @@ pub fn create_embeddings_from_db(args: &cli::EmbeddingArgs) -> Result<(), anyhow
     );
 
     // Exit process if any of the threads panic
+    // This should never happen as thread results are handled below
     panic::set_hook(Box::new(move |panic_info| {
         eprintln!("{}", panic_info);
         process::exit(1);
     }));
 
+    // Create channel that will send the database rows to embedding worker
     let (producer_tx, producer_rx): (Sender<Vec<Row>>, Receiver<Vec<Row>>) = mpsc::channel();
     let (embedding_tx, embedding_rx): (
         Sender<Vec<EmbeddingRecord>>,
         Receiver<Vec<EmbeddingRecord>>,
     ) = mpsc::channel();
 
+    // Create exporter based on provided args
+    // For now we only have csv and db exporters
     let exporter_handle = if args.out_csv.is_some() {
         csv_exporter_worker(args, embedding_rx)?
     } else {
         db_exporter_worker(args, embedding_rx)?
     };
 
+    // Collect the thread handles in a vector to wait them
     let handles = vec![
         producer_worker(args, producer_tx)?,
         embedding_worker(args, producer_rx, embedding_tx)?,

@@ -129,6 +129,7 @@ impl EncoderService {
         text: &Vec<&str>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         let session = &self.encoder;
+        let text_len = text.len();
         let preprocessed = self
             .tokenizer
             .as_ref()
@@ -150,23 +151,14 @@ impl EncoderService {
             .map(|i| i.get_type_ids().iter().map(|b| *b as i64).collect())
             .concat();
 
-        let ids = CowArray::from(Array2::from_shape_vec(
-            (text.len(), v1.len() / text.len()),
-            v1,
-        )?)
-        .into_dyn();
+        let ids =
+            CowArray::from(Array2::from_shape_vec((text_len, v1.len() / text_len), v1)?).into_dyn();
 
-        let mask = CowArray::from(Array2::from_shape_vec(
-            (text.len(), v2.len() / text.len()),
-            v2,
-        )?)
-        .into_dyn();
+        let mask =
+            CowArray::from(Array2::from_shape_vec((text_len, v2.len() / text_len), v2)?).into_dyn();
 
-        let type_ids = CowArray::from(Array2::from_shape_vec(
-            (text.len(), v3.len() / text.len()),
-            v3,
-        )?)
-        .into_dyn();
+        let type_ids =
+            CowArray::from(Array2::from_shape_vec((text_len, v3.len() / text_len), v3)?).into_dyn();
 
         let outputs = session.run(vec![
             Value::from_array(session.allocator(), &ids)?,
@@ -415,7 +407,7 @@ pub mod clip {
         let result = model_info.encoder.as_ref().unwrap().process_text(texts);
 
         match result {
-            Ok(res) => Ok(res.clone()),
+            Ok(res) => Ok(res),
             Err(err) => {
                 // remove lock
                 drop(map);
@@ -508,7 +500,7 @@ pub mod clip {
         let result = model_info.encoder.as_ref().unwrap().process_image(&buffers);
 
         match result {
-            Ok(res) => Ok(res.clone()),
+            Ok(res) => Ok(res),
             Err(err) => {
                 // remove lock
                 drop(map);
