@@ -36,7 +36,7 @@ impl Logger {
     }
 
     pub fn warn(&self, msg: &str) {
-        if self.level != LogLevel::Warn || self.level != LogLevel::Debug {
+        if self.level != LogLevel::Warn && self.level != LogLevel::Debug {
             return;
         }
 
