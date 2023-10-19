@@ -19,6 +19,10 @@ impl Logger {
         }
     }
 
+    pub fn print_raw(&self, msg: &str) {
+        println!("{}", msg);
+    }
+
     pub fn info(&self, msg: &str) {
         if self.level == LogLevel::Error {
             return;

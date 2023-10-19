@@ -339,6 +339,6 @@ pub fn create_embeddings_from_db(
 
 pub fn show_available_models(args: &cli::ShowModelsArgs) {
     let logger = Logger::new("Lantern Embeddings", LogLevel::Info);
-    logger.info("Lantern CLI - Available Models\n");
-    logger.info(&clip::get_available_models(args.data_path.as_deref()));
+    logger.info("Available Models\n");
+    logger.print_raw(&clip::get_available_models(args.data_path.as_deref()));
 }
