@@ -173,6 +173,24 @@ This is a CLI application that generates vector embeddings from your postgres da
 
 Run `cargo install --path lantern_cli` to install the binary
 
+or build and use the docker image
+
+```bash
+# CPU version
+docker build -f Dockerfile.cli -t lantern-cli .
+
+# GPU version (CUDA)
+docker build -f Dockerfile.cli.cuda -t lantern-cli:gpu .
+
+# Run with CPU version
+docker run lantern-cli create-embeddings  --model 'BAAI/bge-large-en' --uri 'postgresql://postgres@127.0.0.1:5432/postgres' --table "wiki" --column "content" --out-column "content_embedding" --pk "id" --batch-size 40
+
+# Run with GPU verion
+nvidia-docker run lantern-cli:gpu create-embeddings  --model 'BAAI/bge-large-en' --uri 'postgresql://postgres@127.0.0.1:5432/postgres' --table "wiki" --column "content" --out-column "content_embedding" --pk "id" --batch-size 40
+```
+
+> [nvidia-container-runtime](https://developer.nvidia.com/nvidia-container-runtime) is required for GPU version to work. You can check the GPU load using `nvtop` command (`apt install nvtop`)
+
 ### Usage
 
 Run `lantern-cli create-embeddings --help` to show the cli options.
