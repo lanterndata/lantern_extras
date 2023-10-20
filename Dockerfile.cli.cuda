@@ -1,4 +1,4 @@
-FROM nvcr.io/nvidia/cuda:12.1.1-cudnn8-runtime-ubuntu22.04
+FROM nvcr.io/nvidia/cuda:11.8.0-runtime-ubuntu22.04
 # Copy the files in your machine to the Docker image
 WORKDIR /app
 COPY . .
@@ -23,6 +23,11 @@ RUN mkdir -p /usr/local/lib && \
     tar xzf ./onnx*.tgz && \
     rm -rf ./onnx*.tgz && \
     mv ./onnx* ./onnxruntime 
+
+# Install libcudnn
+RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/libcudnn8_8.7.0.84-1+cuda11.8_amd64.deb -O libcudnn.deb && \
+    dpkg -i libcudnn.deb && \
+    rm -rf libcudnn.deb
 
 ENV ORT_STRATEGY=system
 ENV ORT_DYLIB_PATH=/usr/local/lib/onnxruntime/lib/libonnxruntime.so
