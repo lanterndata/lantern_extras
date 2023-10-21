@@ -31,29 +31,46 @@ fn producer_worker(
     let schema = args.schema.clone();
     let table = args.table.clone();
     let batch_size = args.batch_size.clone();
+    let limit = args.limit.clone();
+    let filter = args.filter.clone();
 
     let handle = std::thread::spawn(move || {
         let mut client = Client::connect(&uri, NoTls)?;
         let mut transaction = client.transaction()?;
-        let rows = transaction
+        if filter.is_none() && limit.is_none() {
+            let rows = transaction
             .query(
                 &format!(
                     "SELECT reltuples::bigint AS estimate FROM pg_class WHERE oid ='\"{schema}\".\"{table}\"'::regclass"
                 ),
                 &[],
             )?;
-        let count: i64 = rows[0].get(0);
-        if count > 0 {
-            logger.info(&format!(
-                "Found approximately {} items in table \"{}\"",
-                count, table,
-            ));
-        } else {
-            logger.warn("Could not estimate table size");
+            let count: i64 = rows[0].get(0);
+            if count > 0 {
+                logger.info(&format!(
+                    "Found approximately {} items in table \"{}\"",
+                    count, table,
+                ));
+            } else {
+                logger.warn("Could not estimate table size");
+            }
         }
+
+        let filter_sql = if filter.is_some() {
+            format!("WHERE {}", filter.unwrap())
+        } else {
+            "".to_owned()
+        };
+
+        let limit_sql = if limit.is_some() {
+            format!("LIMIT {}", limit.unwrap())
+        } else {
+            "".to_owned()
+        };
+
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction.bind(
-            &format!("SELECT \"{pk}\"::text, \"{column}\" FROM \"{schema}\".\"{table}\";"),
+            &format!("SELECT \"{pk}\"::text, \"{column}\" FROM \"{schema}\".\"{table}\" {filter_sql} {limit_sql};"),
             &[],
         )?;
 
@@ -94,19 +111,12 @@ fn embedding_worker(
 
     let handle = std::thread::spawn(move || {
         let mut start = Instant::now();
-        loop {
-            let rows = rx.recv();
-            if rows.is_err() {
-                // channel has been closed
-                break;
-            }
-
+        while let Ok(rows) = rx.recv() {
             if count == 0 {
                 // mark exact start time
                 start = Instant::now();
             }
 
-            let rows = rows.unwrap();
             let mut input_vectors: Vec<&str> = Vec::with_capacity(rows.len());
             let mut input_ids: Vec<String> = Vec::with_capacity(rows.len());
 
@@ -194,18 +204,11 @@ fn db_exporter_worker(
         let mut transaction = client.transaction()?;
         let mut writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"))?;
         let mut did_receive = false;
-        loop {
-            let rows = rx.recv();
-            if rows.is_err() {
-                // channel has been closed
-                break;
-            }
-
+        while let Ok(rows) = rx.recv() {
             if !did_receive {
                 did_receive = true;
             }
 
-            let rows = rows.unwrap();
             for row in &rows {
                 writer.write(row.0.as_bytes())?;
                 writer.write("\t".as_bytes())?;
@@ -257,14 +260,7 @@ fn csv_exporter_worker(
     let csv_path = args.out_csv.clone().unwrap();
     let handle = std::thread::spawn(move || {
         let mut wtr = Writer::from_path(&csv_path).unwrap();
-
-        loop {
-            let rows = rx.recv();
-            if rows.is_err() {
-                // channel has been closed
-                break;
-            }
-            let rows = rows.unwrap();
+        while let Ok(rows) = rx.recv() {
             for row in &rows {
                 let vector_string = &format!(
                     "{{{}}}",

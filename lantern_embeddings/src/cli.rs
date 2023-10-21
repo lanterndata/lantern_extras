@@ -54,6 +54,14 @@ pub struct EmbeddingArgs {
     /// Output csv path. If specified result will be written in csv instead of database
     #[arg(short, long)]
     pub out_csv: Option<String>,
+
+    /// Filter which will be used when getting data from source table
+    #[arg(short, long)]
+    pub filter: Option<String>,
+
+    /// Limit will be applied to source table if specified
+    #[arg(short, long)]
+    pub limit: Option<u32>,
 }
 
 impl EmbeddingArgs {
