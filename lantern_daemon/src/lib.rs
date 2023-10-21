@@ -203,7 +203,7 @@ async fn collect_pending_jobs(
     let rows = client
         .query(
             &format!(
-                "SELECT id::TEXT, canceled_at, init_finished_at, src_column, dst_column FROM {table} WHERE init_finished_at IS NOT NULL ORDER BY created_at"
+                "SELECT id::TEXT, canceled_at, init_finished_at, src_column, dst_column FROM {table} WHERE init_failed_at IS NULL ORDER BY created_at"
             ),
             &[],
         )
