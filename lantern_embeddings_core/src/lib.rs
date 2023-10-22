@@ -29,7 +29,8 @@ pub struct EncoderService {
 pub struct EncoderOptions {
     pub visual: bool,
     pub use_tokenizer: bool,
-    pub pad_token_sequence: usize,
+    pub max_tokens: usize,
+    pub pad_tokens: bool,
     pub input_image_size: Option<usize>,
 }
 
@@ -44,10 +45,10 @@ struct ModelInfo {
 
 lazy_static! {
     static ref MODEL_INFO_MAP: RwLock<HashMap<&'static str, ModelInfo>> = RwLock::new(HashMap::from([
-        ("clip/ViT-B-32-textual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/tokenizer.json"), encoder_args: EncoderOptions{visual:false, pad_token_sequence: 77, use_tokenizer: true, input_image_size: None}}),
-        ("clip/ViT-B-32-visual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/visual/model.onnx", tokenizer_url: None, encoder_args: EncoderOptions{visual:true, input_image_size: Some(224), use_tokenizer: false, pad_token_sequence: 0} }),
-        ("BAAI/bge-base-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/tokenizer.json"), encoder_args: EncoderOptions{visual:false, pad_token_sequence: 512, use_tokenizer: true, input_image_size: None}}),
-        ("BAAI/bge-large-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en/tokenizer.json"), encoder_args: EncoderOptions{visual:false, pad_token_sequence: 512, use_tokenizer: true, input_image_size: None}}),
+        ("clip/ViT-B-32-textual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 77, pad_tokens: true, use_tokenizer: true, input_image_size: None}}),
+        ("clip/ViT-B-32-visual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/visual/model.onnx", tokenizer_url: None, encoder_args: EncoderOptions{visual:true, input_image_size: Some(224), use_tokenizer: false, pad_tokens: false, max_tokens: 0 } }),
+        ("BAAI/bge-base-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("BAAI/bge-large-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
     ]));
 }
 
@@ -84,8 +85,8 @@ impl EncoderService {
                 Tokenizer::from_file(Path::join(model_folder, "tokenizer.json")).unwrap();
 
             tokenizer_instance.with_padding(Some(PaddingParams {
-                strategy: if args.pad_token_sequence > 0 {
-                    PaddingStrategy::Fixed(args.pad_token_sequence)
+                strategy: if args.pad_tokens {
+                    PaddingStrategy::Fixed(args.max_tokens)
                 } else {
                     PaddingStrategy::BatchLongest
                 },
@@ -96,14 +97,12 @@ impl EncoderService {
                 pad_token: "[PAD]".to_string(),
             }));
 
-            if args.pad_token_sequence > 0 {
-                tokenizer_instance.with_truncation(Some(TruncationParams {
-                    direction: TruncationDirection::Right,
-                    max_length: args.pad_token_sequence,
-                    strategy: TruncationStrategy::LongestFirst,
-                    stride: 0,
-                }))?;
-            }
+            tokenizer_instance.with_truncation(Some(TruncationParams {
+                direction: TruncationDirection::Right,
+                max_length: args.max_tokens,
+                strategy: TruncationStrategy::LongestFirst,
+                stride: 0,
+            }))?;
 
             tokenizer = Some(tokenizer_instance);
         }
