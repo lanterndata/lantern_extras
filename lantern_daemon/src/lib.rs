@@ -309,7 +309,12 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
 
     let main_db_client = Arc::new(main_db_client);
     let notification_channel = "lantern_cloud_jobs";
-    let data_path = "/usr/local/share/lantern-daemon";
+    let data_path = if cfg!(target_os = "macos") {
+        "/usr/local/var/lantern-daemon"
+    } else {
+        "/var/lib/lantern-daemon"
+    };
+
 
     let (insert_notification_queue_tx, insert_notification_queue_rx): (
         Sender<JobInsertNotification>,
