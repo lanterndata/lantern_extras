@@ -5,12 +5,14 @@ use lantern_logger::{LogLevel, Logger};
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::sync::RwLock;
 use tokio::sync::{
     mpsc,
     mpsc::{Receiver, Sender},
 };
 use tokio_postgres::{AsyncMessage, Client, NoTls};
+use url::Url;
 
 enum Signal {
     Stop,
@@ -127,7 +129,8 @@ async fn client_notification_listener(
     job_insert_queue_tx: Sender<JobInsertNotification>,
     logger: Arc<Logger>,
 ) -> Result<Sender<()>, anyhow::Error> {
-    let (client, mut connection) = tokio_postgres::connect(&db_uri, NoTls).await?;
+    let uri = Url::parse_with_params(&db_uri, &[("connect_timeout", "10")])?;
+    let (client, mut connection) = tokio_postgres::connect(&uri.as_str(), NoTls).await?;
 
     let client = Arc::new(client);
 
@@ -254,10 +257,10 @@ async fn start_client_job(
     let mut jobs = CLIENT_JOBS.write().await;
     jobs.insert(job_id.deref().clone(), job_signal_tx);
 
-    let cancel_listener_task = client_notification_listener(
+    let mut cancel_listener_task = client_notification_listener(
         db_uri.clone(),
         notification_channel.clone(),
-        job_signal_tx_clone,
+        job_signal_tx_clone.clone(),
         job_insert_queue_tx.clone(),
         client_task_logger.clone(),
     )
@@ -278,12 +281,28 @@ async fn start_client_job(
                     signal_listener_logger.info("Job stopped");
                     break;
                 }
-                Signal::Restart => {
-                    // TODO implement restarts
+                Signal::Restart => loop {
                     signal_listener_logger.info("Restarting job");
-                }
+
+                    let res = client_notification_listener(
+                        db_uri.clone(),
+                        notification_channel.clone(),
+                        job_signal_tx_clone.clone(),
+                        job_insert_queue_tx.clone(),
+                        client_task_logger.clone(),
+                    )
+                    .await;
+
+                    if let Ok(tx) = res {
+                        cancel_listener_task = tx;
+                        break;
+                    } else {
+                        tokio::time::sleep(Duration::from_secs(10)).await;
+                    }
+                },
             }
         }
+        Ok(()) as AnyhowVoidResult
     });
 
     Ok(())

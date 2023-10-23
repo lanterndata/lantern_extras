@@ -146,7 +146,6 @@ async fn startup_hook(
     table: &str,
     schema: &str,
     channel: &str,
-    data_path: &str,
     logger: Arc<Logger>,
 ) -> AnyhowVoidResult {
     logger.info("Setting up environment");
@@ -191,10 +190,6 @@ async fn startup_hook(
         ))
         .await?;
 
-    let data_path = Path::new(data_path);
-    if !data_path.exists() {
-        fs::create_dir(data_path).await?;
-    }
     Ok(())
 }
 
@@ -249,6 +244,7 @@ async fn job_insert_processor(
             
             let job_result = client.query_one(&format!("SELECT id::TEXT, db_connection as db_uri, src_column as \"column\", dst_column, \"table\", \"schema\", embedding_model as model FROM {0} WHERE id={id}", &full_table_name), &[]).await;
 
+            // TODO implement locking and batching
             if let Ok(row) = job_result {
                 let mut job = Job::new(row);
                 job.set_is_init(notification.init);
@@ -298,6 +294,34 @@ async fn job_update_processor(
     Ok(())
 }
 
+async fn create_data_path(logger: Arc<Logger>) ->  &'static str {
+    let tmp_path = "/tmp/lantern-daemon";
+    let data_path = if cfg!(target_os = "macos") {
+        "/usr/local/var/lantern-daemon"
+    } else {
+        "/var/lib/lantern-daemon"
+    };
+    
+    let data_path_obj = Path::new(data_path);
+    if data_path_obj.exists() {
+        return data_path;
+    }
+    
+    if fs::create_dir(data_path).await.is_ok() {
+        return data_path;
+    }
+
+    logger.warn(&format!("No write permission in directory {data_path}. Writing data to temp directory"));
+    let tmp_path_obj = Path::new(tmp_path);
+
+    if tmp_path_obj.exists() {
+        return tmp_path;
+    }
+    
+    fs::create_dir(tmp_path).await.unwrap();
+    tmp_path
+}
+
 #[tokio::main]
 pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
     let logger = Arc::new(Logger::new("Lantern Daemon", args.log_level.value()));
@@ -309,12 +333,7 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
 
     let main_db_client = Arc::new(main_db_client);
     let notification_channel = "lantern_cloud_jobs";
-    let data_path = if cfg!(target_os = "macos") {
-        "/usr/local/var/lantern-daemon"
-    } else {
-        "/var/lib/lantern-daemon"
-    };
-
+    let data_path = create_data_path(logger.clone()).await;
 
     let (insert_notification_queue_tx, insert_notification_queue_rx): (
         Sender<JobInsertNotification>,
@@ -331,7 +350,6 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
         &args.table,
         &args.schema,
         &notification_channel,
-        &data_path,
         logger.clone(),
     )
     .await?;
