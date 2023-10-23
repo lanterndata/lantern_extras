@@ -13,7 +13,7 @@ pub struct Job {
     pub filter: Option<String>,
     pub out_column: String,
     pub model: String,
-    pub batch_size: usize,
+    pub batch_size: Option<usize>,
 }
 
 impl Job {
@@ -28,8 +28,7 @@ impl Job {
             model: row.get::<&str, String>("model"),
             filter: None,
             is_init: true,
-            // TODO this should be configured based on model
-            batch_size: 100,
+            batch_size: None,
         }
     }
 

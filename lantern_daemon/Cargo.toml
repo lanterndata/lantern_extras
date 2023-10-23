@@ -16,4 +16,4 @@ lantern_embeddings = { path = "../lantern_embeddings" }
 futures = "0.3.28"
 tokio = { version = "1.33.0", features = ["full"] }
 lantern_logger = { path = "../lantern_logger" }
-
+lazy_static = "1.4.0"

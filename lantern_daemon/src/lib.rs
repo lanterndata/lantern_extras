@@ -20,6 +20,9 @@ use tokio::sync::{
 use tokio_postgres::{AsyncMessage, Client, NoTls};
 use types::{AnyhowVoidResult, Job, JobInsertNotification, VoidFuture, JobUpdateNotification};
 
+#[macro_use]
+extern crate lazy_static;
+
 async fn db_notification_listener(
     db_uri: String,
     notification_channel: &'static str,
@@ -100,7 +103,7 @@ async fn embedding_worker(
             let data_path = data_path.clone();
 
             let task_logger = Logger::new(&format!("Job {}", job.id), logger.level.clone());
-            let result = lantern_embeddings::create_embeddings_from_db(&EmbeddingArgs {
+            let result = lantern_embeddings::create_embeddings_from_db(EmbeddingArgs {
                 pk: String::from("id"),
                 model: job.model,
                 schema: job.schema.clone(),
@@ -164,7 +167,9 @@ async fn startup_hook(
 
             CREATE OR REPLACE FUNCTION notify_update_lantern_daemon() RETURNS TRIGGER AS $$
               BEGIN
-                IF NEW.canceled_at IS NULL OR OLD.canceled_at IS NULL THEN
+                IF (NEW.canceled_at IS NULL AND OLD.canceled_at IS NOT NULL) 
+                OR (NEW.canceled_at IS NOT NULL AND OLD.canceled_at IS NULL)
+                THEN
                      PERFORM pg_notify('{channel}', 'update:' || NEW.id::TEXT);
 	            END IF;
                 RETURN NEW;
@@ -210,9 +215,7 @@ async fn collect_pending_jobs(
         .await?;
 
     for row in rows {
-        let canceled_at: Option<SystemTime> = row.get("canceled_at");
         let init_finished_at: Option<SystemTime> = row.get("init_finished_at");
-
         // TODO This can be optimized
         if init_finished_at.is_none() {
           insert_notification_tx.send(JobInsertNotification { id: row.get::<usize, String>(0).to_owned(), init: true, filter: None, limit: None }).await?;

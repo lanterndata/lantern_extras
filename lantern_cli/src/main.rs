@@ -11,7 +11,7 @@ fn main() {
             lantern_create_index::create_usearch_index(&args, None).unwrap();
         }
         cli::Commands::CreateEmbeddings(args) => {
-            lantern_embeddings::create_embeddings_from_db(&args, None).unwrap();
+            lantern_embeddings::create_embeddings_from_db(args, None).unwrap();
         }
         cli::Commands::ShowModels(args) => {
             lantern_embeddings::show_available_models(&args);

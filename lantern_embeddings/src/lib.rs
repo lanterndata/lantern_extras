@@ -21,23 +21,20 @@ type AnyhowVoidResult = Result<(), anyhow::Error>;
 // 2. Create transaction portal which will poll data from database of batch size provided via args
 // 3. Send the rows over the channel
 fn producer_worker(
-    args: &cli::EmbeddingArgs,
+    args: Arc<cli::EmbeddingArgs>,
+    batch_size: usize,
     tx: Sender<Vec<Row>>,
     logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
-    let uri = args.uri.clone();
-    let pk = args.pk.clone();
-    let column = args.column.clone();
-    let schema = args.schema.clone();
-    let table = args.table.clone();
-    let batch_size = args.batch_size.clone();
-    let limit = args.limit.clone();
-    let filter = args.filter.clone();
-
     let handle = std::thread::spawn(move || {
-        let mut client = Client::connect(&uri, NoTls)?;
+        let pk = &args.pk;
+        let column = &args.column;
+        let schema = &args.schema;
+        let table = &args.table;
+
+        let mut client = Client::connect(&args.uri, NoTls)?;
         let mut transaction = client.transaction()?;
-        if filter.is_none() && limit.is_none() {
+        if args.filter.is_none() && args.limit.is_none() {
             let rows = transaction
             .query(
                 &format!(
@@ -56,14 +53,14 @@ fn producer_worker(
             }
         }
 
-        let filter_sql = if filter.is_some() {
-            format!("WHERE {}", filter.unwrap())
+        let filter_sql = if args.filter.is_some() {
+            format!("WHERE {}", args.filter.as_ref().unwrap())
         } else {
             "".to_owned()
         };
 
-        let limit_sql = if limit.is_some() {
-            format!("LIMIT {}", limit.unwrap())
+        let limit_sql = if args.limit.is_some() {
+            format!("LIMIT {}", args.limit.as_ref().unwrap())
         } else {
             "".to_owned()
         };
@@ -99,18 +96,17 @@ fn producer_worker(
 // So we will get Vec<Row<String, String> and output Vec<(String, Vec<f32>)> the output will
 // contain generated embeddings for the text. If text will be null we will skip that row
 fn embedding_worker(
-    args: &cli::EmbeddingArgs,
+    args: Arc<cli::EmbeddingArgs>,
     rx: Receiver<Vec<Row>>,
     tx: Sender<Vec<EmbeddingRecord>>,
     logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
-    let is_visual = args.visual.clone();
-    let model = args.model.clone();
-    let data_path = args.data_path.clone();
-    let mut count: u64 = 0;
-
     let handle = std::thread::spawn(move || {
+        let mut count: u64 = 0;
+        let model = &args.model;
+        let data_path = &args.data_path;
         let mut start = Instant::now();
+
         while let Ok(rows) = rx.recv() {
             if count == 0 {
                 // mark exact start time
@@ -132,7 +128,7 @@ fn embedding_worker(
                 continue;
             }
 
-            let response_embeddings = if is_visual {
+            let response_embeddings = if args.visual {
                 clip::process_image(&model, &input_vectors, None, data_path.as_deref())
             } else {
                 clip::process_text(&model, &input_vectors, None, data_path.as_deref())
@@ -162,7 +158,12 @@ fn embedding_worker(
             }
             tx.send(response_data).unwrap();
         }
-        logger.info("Embedding generation finished, waiting to export results...");
+
+        if count > 0 {
+            logger.info("Embedding generation finished, waiting to export results...");
+        } else {
+            logger.warn("No data to generate embeddings");
+        }
         drop(tx);
         Ok(())
     });
@@ -177,17 +178,17 @@ fn embedding_worker(
 // At the end we will flush the writer commit the transaction and UPDATE destination table
 // Using our TEMP table data
 fn db_exporter_worker(
-    args: &cli::EmbeddingArgs,
+    args: Arc<cli::EmbeddingArgs>,
     rx: Receiver<Vec<EmbeddingRecord>>,
     logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
-    let uri = args.out_uri.clone().unwrap_or(args.uri.clone());
-    let pk = args.pk.clone();
-    let column = args.out_column.clone();
-    let table = args.out_table.clone().unwrap_or(args.table.clone());
-    let schema = args.schema.clone();
-
     let handle = std::thread::spawn(move || {
+        let uri = args.out_uri.as_ref().unwrap_or(&args.uri);
+        let pk = &args.pk;
+        let column = &args.out_column;
+        let table = args.out_table.as_ref().unwrap_or(&args.table);
+        let schema = &args.schema;
+
         let mut client = Client::connect(&uri, NoTls)?;
         let mut transaction = client.transaction()?;
         let mut rng = rand::thread_rng();
@@ -253,12 +254,12 @@ fn db_exporter_worker(
 }
 
 fn csv_exporter_worker(
-    args: &cli::EmbeddingArgs,
+    args: Arc<cli::EmbeddingArgs>,
     rx: Receiver<Vec<EmbeddingRecord>>,
     logger: Arc<Logger>,
 ) -> Result<JoinHandle<AnyhowVoidResult>, anyhow::Error> {
-    let csv_path = args.out_csv.clone().unwrap();
     let handle = std::thread::spawn(move || {
+        let csv_path = args.out_csv.as_ref().unwrap();
         let mut wtr = Writer::from_path(&csv_path).unwrap();
         while let Ok(rows) = rx.recv() {
             for row in &rows {
@@ -282,15 +283,30 @@ fn csv_exporter_worker(
     return Ok(handle);
 }
 
+fn get_default_batch_size(model: &str) -> usize {
+    match model {
+        "clip/ViT-B-32-textual" => 500,
+        "clip/ViT-B-32-visual" => 100,
+        "BAAI/bge-base-en" => 100,
+        "BAAI/bge-large-en" => 40,
+        _ => 100,
+    }
+}
+
 pub fn create_embeddings_from_db(
-    args: &cli::EmbeddingArgs,
+    args: cli::EmbeddingArgs,
     logger: Option<Logger>,
 ) -> Result<(), anyhow::Error> {
     let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Embeddings", LogLevel::Debug)));
     logger.info("Lantern CLI - Create Embeddings");
+    let args = Arc::new(args);
+    let batch_size = args
+        .batch_size
+        .unwrap_or(get_default_batch_size(&args.model));
+
     logger.debug(&format!(
         "Model - {}, Visual - {}, Batch Size - {}",
-        args.model, args.visual, args.batch_size
+        args.model, args.visual, batch_size
     ));
 
     // Exit process if any of the threads panic
@@ -311,15 +327,15 @@ pub fn create_embeddings_from_db(
     // Create exporter based on provided args
     // For now we only have csv and db exporters
     let exporter_handle = if args.out_csv.is_some() {
-        csv_exporter_worker(args, embedding_rx, logger.clone())?
+        csv_exporter_worker(args.clone(), embedding_rx, logger.clone())?
     } else {
-        db_exporter_worker(args, embedding_rx, logger.clone())?
+        db_exporter_worker(args.clone(), embedding_rx, logger.clone())?
     };
 
     // Collect the thread handles in a vector to wait them
     let handles = vec![
-        producer_worker(args, producer_tx, logger.clone())?,
-        embedding_worker(args, producer_rx, embedding_tx, logger.clone())?,
+        producer_worker(args.clone(), batch_size, producer_tx, logger.clone())?,
+        embedding_worker(args.clone(), producer_rx, embedding_tx, logger.clone())?,
         exporter_handle,
     ];
 

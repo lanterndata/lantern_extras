@@ -40,8 +40,8 @@ pub struct EmbeddingArgs {
     pub out_column: String,
 
     /// Batch size
-    #[arg(short, long, default_value_t = 200)]
-    pub batch_size: usize,
+    #[arg(short, long)]
+    pub batch_size: Option<usize>,
 
     /// Data path
     #[arg(short, long)]
