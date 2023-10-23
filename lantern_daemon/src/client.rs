@@ -104,7 +104,7 @@ async fn remove_client_triggers(
             db_connection_logger.error(&e.to_string());
         }
     });
-    let full_table_name = get_full_table_name(schema.deref(), table.deref());
+    let full_table_name = get_full_table_name(schema, table);
 
     // Set up trigger on table insert
     db_client
@@ -202,7 +202,7 @@ async fn start_client_job(
     let logger = Arc::new(Logger::new(&format!("Job {job_id}"), log_level));
 
     let jobs = CLIENT_JOBS.read().await;
-    if jobs.get(job_id.deref().clone()).is_some() {
+    if jobs.get(&job_id).is_some() {
         logger.warn("Job is active, cancelling before running again");
         drop(jobs);
         stop_client_job(&db_uri, &job_id, &src_column, &table, &schema, false).await?;
@@ -301,14 +301,7 @@ async fn stop_client_job(
 
     if remove {
         // remove client triggers
-        let res = remove_client_triggers(
-            db_uri.clone(),
-            src_column.clone(),
-            table.clone(),
-            schema.clone(),
-            logger.clone(),
-        )
-        .await;
+        let res = remove_client_triggers(db_uri, src_column, table, schema, logger.clone()).await;
 
         if let Err(e) = res {
             logger.error(&format!("Error while removing triggers: {}", e))
@@ -317,7 +310,7 @@ async fn stop_client_job(
 
     // Cancel job and remove from hashmap
     let mut jobs = CLIENT_JOBS.write().await;
-    let job = jobs.remove(job_id.clone());
+    let job = jobs.remove(job_id);
     drop(jobs);
 
     match job {
