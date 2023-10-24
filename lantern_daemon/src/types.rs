@@ -25,7 +25,7 @@ impl Job {
             table: row.get::<&str, String>("table"),
             column: row.get::<&str, String>("column"),
             out_column: row.get::<&str, String>("dst_column"),
-            model: row.get::<&str, String>("embedding_model"),
+            model: row.get::<&str, String>("model"),
             filter: None,
             is_init: true,
             batch_size: None,
