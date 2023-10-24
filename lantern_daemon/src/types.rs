@@ -44,6 +44,7 @@ impl Job {
 pub struct JobInsertNotification {
     pub id: i32,
     pub init: bool,
+    pub generate_missing: bool,
     pub row_id: Option<String>,
     pub filter: Option<String>,
     pub limit: Option<u32>,

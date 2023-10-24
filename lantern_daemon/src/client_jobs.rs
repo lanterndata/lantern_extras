@@ -165,6 +165,7 @@ async fn client_notification_listener(
                     .send(JobInsertNotification {
                         id: job_id,
                         init: false,
+                        generate_missing: false,
                         row_id: Some(pk.to_owned()),
                         filter: None,
                         limit: None,

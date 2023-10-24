@@ -68,6 +68,7 @@ async fn db_notification_listener(
                             .send(JobInsertNotification {
                                 id,
                                 init: true,
+                                generate_missing: false,
                                 row_id: None,
                                 filter: None,
                                 limit: None,
@@ -329,7 +330,8 @@ async fn job_insert_processor(
 
                 continue;
             }
-            if notification.init {
+
+            if notification.init && !notification.generate_missing {
                 // Only update init time if this is the first time job is being executed
                 let updated_count = client_r1.execute(&format!("UPDATE {0} SET init_started_at=NOW() WHERE init_started_at IS NULL AND id={id}", &full_table_name_r1), &[]).await?;
                 if updated_count == 0 {
@@ -426,14 +428,14 @@ async fn job_update_processor(
               logger.debug(&format!("Update job {id}: is_canceled: {}", canceled_at.is_some()));
             }
 
-            if init_finished_at.is_none() {
+            if init_finished_at.is_some() {
               toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
             }
 
             if canceled_at.is_none() && notification.generate_missing {
                 // this will be on startup to generate embeddings for rows that might be inserted
                 // while daemon is offline
-                job_insert_queue_tx.send(JobInsertNotification { id, init: init_finished_at.is_none(), filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
+                job_insert_queue_tx.send(JobInsertNotification { id, init: init_finished_at.is_none(), generate_missing: true, filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
             }
         }
         Ok(()) as AnyhowVoidResult
