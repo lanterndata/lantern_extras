@@ -20,11 +20,11 @@ enum Signal {
 }
 
 lazy_static! {
-    static ref CLIENT_JOBS: RwLock<HashMap<String, Sender<Signal>>> = RwLock::new(HashMap::new());
+    static ref CLIENT_JOBS: RwLock<HashMap<i32, Sender<Signal>>> = RwLock::new(HashMap::new());
 }
 
 pub async fn toggle_client_job(
-    job_id: String,
+    job_id: i32,
     db_uri: String,
     src_column: String,
     table: String,
@@ -48,19 +48,19 @@ pub async fn toggle_client_job(
             .await;
         });
     } else {
-        let _ = stop_client_job(&db_uri, &job_id, &src_column, &table, &schema, true).await;
+        let _ = stop_client_job(&db_uri, job_id, &src_column, &table, &schema, true).await;
     }
 
     Ok(())
 }
 
 async fn setup_client_triggers(
+    job_id: i32,
     client: Arc<Client>,
     column: Arc<String>,
     table: Arc<String>,
     schema: Arc<String>,
     channel: Arc<String>,
-    job_id: Arc<String>,
     logger: Arc<Logger>,
 ) -> AnyhowVoidResult {
     logger.info("Setting Up Client Triggers");
@@ -153,17 +153,21 @@ async fn client_notification_listener(
             let message = message.unwrap();
 
             if let AsyncMessage::Notification(not) = message {
-                let mut parts = not.payload().split(':');
-                let pk: &str = parts.next().unwrap();
-                let job_id: &str = parts.next().unwrap();
-                // TODO take pk from job
-                let pk_name = "id";
+                let parts: Vec<&str> = not.payload().split(':').collect();
 
+                if parts.len() < 2 {
+                    logger.error(&format!("Invalid notification received {}", not.payload()));
+                    continue;
+                }
+                let pk: &str = parts[0];
+                let job_id = i32::from_str_radix(parts[1], 10).unwrap();
                 let result = job_insert_queue_tx
                     .send(JobInsertNotification {
-                        id: job_id.to_owned(),
+                        id: job_id,
                         init: false,
-                        filter: Some(format!("\"{pk_name}\"={pk}")),
+                        startup: false,
+                        row_id: Some(pk.to_owned()),
+                        filter: None,
                         limit: None,
                     })
                     .await;
@@ -194,7 +198,7 @@ async fn client_notification_listener(
 }
 
 async fn start_client_job(
-    job_id: String,
+    job_id: i32,
     db_uri: String,
     src_column: String,
     table: String,
@@ -208,7 +212,7 @@ async fn start_client_job(
     if jobs.get(&job_id).is_some() {
         logger.warn("Job is active, cancelling before running again");
         drop(jobs);
-        stop_client_job(&db_uri, &job_id, &src_column, &table, &schema, false).await?;
+        stop_client_job(&db_uri, job_id, &src_column, &table, &schema, false).await?;
     } else {
         drop(jobs);
     }
@@ -234,16 +238,15 @@ async fn start_client_job(
     let src_column = Arc::new(src_column);
     let table = Arc::new(table);
     let schema = Arc::new(schema);
-    let job_id = Arc::new(job_id);
 
     // Setup triggers on client database table, to get new inserts
     setup_client_triggers(
+        job_id,
         db_client,
         src_column.clone(),
         table.clone(),
         schema.clone(),
         notification_channel.clone(),
-        job_id.clone(),
         logger.clone(),
     )
     .await?;
@@ -255,7 +258,7 @@ async fn start_client_job(
 
     // Save job tx into shared hashmap, so we will be able to stop the job later
     let mut jobs = CLIENT_JOBS.write().await;
-    jobs.insert(job_id.deref().clone(), job_signal_tx);
+    jobs.insert(job_id, job_signal_tx);
 
     let mut cancel_listener_task = client_notification_listener(
         db_uri.clone(),
@@ -310,7 +313,7 @@ async fn start_client_job(
 
 async fn stop_client_job(
     db_uri: &str,
-    job_id: &str,
+    job_id: i32,
     src_column: &str,
     table: &str,
     schema: &str,
@@ -329,7 +332,7 @@ async fn stop_client_job(
 
     // Cancel job and remove from hashmap
     let mut jobs = CLIENT_JOBS.write().await;
-    let job = jobs.remove(job_id);
+    let job = jobs.remove(&job_id);
     drop(jobs);
 
     match job {

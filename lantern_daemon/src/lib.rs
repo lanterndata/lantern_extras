@@ -8,20 +8,25 @@ use futures::{future, StreamExt};
 use helpers::{check_table_exists, get_full_table_name};
 use lantern_embeddings::cli::EmbeddingArgs;
 use lantern_logger::Logger;
+use std::collections::HashMap;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
+use std::time::Duration;
 use std::{ops::Deref, time::SystemTime};
 use tokio::fs;
+use tokio::sync::Mutex;
 use tokio::sync::{
     mpsc,
     mpsc::{Receiver, Sender},
 };
 use tokio_postgres::{AsyncMessage, Client, NoTls};
-use types::{AnyhowVoidResult, Job, JobInsertNotification, VoidFuture, JobUpdateNotification};
+use types::{AnyhowVoidResult, Job, JobInsertNotification, JobUpdateNotification, VoidFuture};
 
 #[macro_use]
 extern crate lazy_static;
+
+const EMB_LOCK_TABLE_NAME: &'static str = "_lantern_emb_job_locks";
 
 async fn db_notification_listener(
     db_uri: String,
@@ -47,16 +52,24 @@ async fn db_notification_listener(
             let message = message.unwrap();
 
             if let AsyncMessage::Notification(not) = message {
-                let mut parts = not.payload().split(':');
-                let action: &str = parts.next().unwrap();
-                let id: &str = parts.next().unwrap();
+                let parts: Vec<&str> = not.payload().split(':').collect();
+
+                if parts.len() < 2 {
+                    logger.error(&format!("Invalid notification received {}", not.payload()));
+                    continue;
+                }
+
+                let action: &str = parts[0];
+                let id = i32::from_str_radix(parts[1], 10).unwrap();
 
                 match action {
                     "insert" => {
                         insert_queue_tx
                             .send(JobInsertNotification {
-                                id: id.to_owned(),
+                                id,
                                 init: true,
+                                startup: false,
+                                row_id: None,
                                 filter: None,
                                 limit: None,
                             })
@@ -64,7 +77,13 @@ async fn db_notification_listener(
                             .unwrap();
                     }
                     "update" => {
-                        update_queue_tx.send(JobUpdateNotification { id: id.to_owned(), generate_missing: true }).await.unwrap();
+                        update_queue_tx
+                            .send(JobUpdateNotification {
+                                id,
+                                generate_missing: true,
+                            })
+                            .await
+                            .unwrap();
                     }
                     _ => logger.error(&format!("Invalid notification received {}", not.payload())),
                 }
@@ -79,6 +98,27 @@ async fn db_notification_listener(
 
     task.await?;
     Ok(())
+}
+
+async fn lock_row(client: Arc<Client>, logger: Arc<Logger>, job_id: i32, row_id: &str) -> bool {
+    let res = client
+        .execute(
+            &format!(
+                "INSERT INTO {EMB_LOCK_TABLE_NAME} (job_id, row_id) VALUES ({job_id}, '{row_id}')"
+            ),
+            &[],
+        )
+        .await;
+
+    if let Err(e) = res {
+        if !e.to_string().to_lowercase().contains("duplicate") {
+            logger.error(&format!(
+                "Error while locking row: {row_id} for job: {job_id} : {e}"
+            ));
+        }
+        return false;
+    }
+    true
 }
 
 async fn embedding_worker(
@@ -186,6 +226,13 @@ async fn startup_hook(
             ON {full_table_name}
             FOR EACH ROW
             EXECUTE PROCEDURE notify_update_lantern_daemon();
+
+            -- Create Lock Table
+            CREATE UNLOGGED TABLE IF NOT EXISTS {EMB_LOCK_TABLE_NAME} (
+              job_id INTEGER NOT NULL,
+              row_id TEXT NOT NULL,
+              CONSTRAINT ldb_lock_jobid_rowid UNIQUE (job_id, row_id)
+            );
         ",
         ))
         .await?;
@@ -203,7 +250,7 @@ async fn collect_pending_jobs(
     let rows = client
         .query(
             &format!(
-                "SELECT id::TEXT, canceled_at, init_finished_at, src_column, dst_column FROM {table} WHERE init_failed_at IS NULL ORDER BY created_at"
+                "SELECT id, canceled_at, init_finished_at, src_column, dst_column FROM {table} WHERE init_failed_at IS NULL ORDER BY created_at"
             ),
             &[],
         )
@@ -213,9 +260,23 @@ async fn collect_pending_jobs(
         let init_finished_at: Option<SystemTime> = row.get("init_finished_at");
         // TODO This can be optimized
         if init_finished_at.is_none() {
-          insert_notification_tx.send(JobInsertNotification { id: row.get::<usize, String>(0).to_owned(), init: true, filter: None, limit: None }).await?;
+            insert_notification_tx
+                .send(JobInsertNotification {
+                    id: row.get::<usize, i32>(0).to_owned(),
+                    init: true,
+                    startup: false,
+                    row_id: None,
+                    filter: None,
+                    limit: None,
+                })
+                .await?;
         } else {
-          update_notification_tx.send(JobUpdateNotification{ id: row.get::<usize, String>(0).to_owned(), generate_missing: true }).await?;
+            update_notification_tx
+                .send(JobUpdateNotification {
+                    id: row.get::<usize, i32>(0).to_owned(),
+                    generate_missing: true,
+                })
+                .await?;
         }
     }
 
@@ -230,35 +291,132 @@ async fn job_insert_processor(
     table: String,
     logger: Arc<Logger>,
 ) -> AnyhowVoidResult {
-    tokio::spawn(async move {
+    // This function will have 2 running tasks
+    // The first task will receive notification which can come from 4 sources
+    // 1 - a new job is inserted into jobs table
+    // 2 - after starting daemon job table scan was happened and we should check for any inserts we
+    // missed while daemon was offline
+    // 3 - job's canceled_at was changed to NULL, which means we should reactivate the job and
+    //   generate embeddings for the rows which were inserted while job had canceled_at
+    // 4 - a new row was inserted into client database and we should generate an embedding for that
+    //   row
+    // 1-3 cases works similiar we just send a new job record to embedding worker receiver which
+    // will start generating embeddings for that job
+    // for the 4th case we will lock the row (insert a record in our lock table) and set that row
+    // in a hashmap item for that job (e.g { [job_id] => Vec<row_id1, row_id2> })
+    // each 10 sconds the second running task the collector task will drain the hashmap and create
+    // batch jobs for the rows. This will optimize embedding generation as if there will be lots of
+    // inserts to the table between 10 seconds all that rows will be batched.
+
+    let job_batching_hashmap: Arc<Mutex<HashMap<i32, Vec<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
+
+    let full_table_name = Arc::new(get_full_table_name(&schema, &table));
+    let job_query_sql = Arc::new(format!("SELECT id, db_connection as db_uri, src_column as \"column\", dst_column, \"table\", \"schema\", embedding_model as model FROM {0}", &full_table_name));
+
+    let full_table_name_r1 = full_table_name.clone();
+    let job_query_sql_r1 = job_query_sql.clone();
+    let client_r1 = client.clone();
+    let job_tx_r1 = job_tx.clone();
+    let logger_r1 = logger.clone();
+    let job_batching_hashmap_r1 = job_batching_hashmap.clone();
+
+    let insert_processor_task = tokio::spawn(async move {
         while let Some(notification) = notifications_rx.recv().await {
-            let full_table_name =  get_full_table_name(&schema, &table);
             let id = notification.id;
+
+            if let Some(row_id) = notification.row_id {
+                // Single row update received from client job, lock row and add to batching map
+                let status = lock_row(client_r1.clone(), logger_r1.clone(), id, &row_id).await;
+
+                if status {
+                    // this means locking was successfull and row will be processed
+                    // from this daemon
+                    let mut jobs = job_batching_hashmap_r1.lock().await;
+                    let job = jobs.get_mut(&id);
+
+                    if let Some(job_vec) = job {
+                        job_vec.push(row_id.to_owned());
+                    } else {
+                        jobs.insert(id, vec![row_id.to_owned()]);
+                    }
+
+                    drop(jobs);
+                }
+
+                continue;
+            }
             if notification.init {
                 // Only update init time if this is the first time job is being executed
-                let updated_count = client.execute(&format!("UPDATE {0} SET init_started_at=NOW() WHERE init_started_at IS NULL AND id={id}", &full_table_name), &[]).await?;
+                let updated_count = client_r1.execute(&format!("UPDATE {0} SET init_started_at=NOW() WHERE init_started_at IS NULL AND id={id}", &full_table_name_r1), &[]).await?;
                 if updated_count == 0 {
                     continue;
                 }
             }
-            
-            let job_result = client.query_one(&format!("SELECT id::TEXT, db_connection as db_uri, src_column as \"column\", dst_column, \"table\", \"schema\", embedding_model as model FROM {0} WHERE id={id}", &full_table_name), &[]).await;
 
-            // TODO implement locking and batching
+            let job_result = client_r1
+                .query_one(
+                    &format!("{job_query_sql_r1} WHERE id={id} AND canceled_at IS NULL"),
+                    &[],
+                )
+                .await;
+
             if let Ok(row) = job_result {
                 let mut job = Job::new(row);
                 job.set_is_init(notification.init);
-                if notification.filter.is_some() {
-                  job.set_filter(&notification.filter.unwrap());
+                if let Some(filter) = notification.filter {
+                    job.set_filter(&filter);
                 }
-                job_tx.send(job).await?;
+                job_tx_r1.send(job).await?;
             } else {
-                logger.error(&format!("Error while getting job {id}: {}", job_result.err().unwrap()));
+                logger_r1.error(&format!(
+                    "Error while getting job {id}: {}",
+                    job_result.err().unwrap()
+                ));
             }
         }
         Ok(()) as AnyhowVoidResult
-    })
-    .await??;
+    });
+
+    let batch_collector_task = tokio::spawn(async move {
+        loop {
+            let mut job_map = job_batching_hashmap.lock().await;
+            let jobs: Vec<(i32, Vec<String>)> = job_map.drain().collect();
+            // release lock
+            drop(job_map);
+
+            for (job_id, row_ids) in jobs {
+                let job_result = client
+                    .query_one(
+                        &format!("{job_query_sql} WHERE id={job_id} AND canceled_at IS NULL"),
+                        &[],
+                    )
+                    .await;
+                if let Err(e) = job_result {
+                    logger.error(&format!("Error while getting job {job_id}: {}", e));
+                    continue;
+                }
+                let row = job_result.unwrap();
+                let mut job = Job::new(row);
+                // TODO take from job
+                let pk = "id";
+                job.set_is_init(false);
+                // TODO this currently will work only for numeric ids
+                // Should check the column type and wrap id's inside single quotes if type id type
+                // is not numeric
+                let row_ids_str = row_ids.join(",");
+                job.set_filter(&format!("\"{pk}\" IN ({row_ids_str})"));
+                let _ = job_tx.send(job).await;
+            }
+
+            // collect jobs every 10 seconds
+            tokio::time::sleep(Duration::from_secs(10)).await;
+        }
+    });
+
+    let (r1, _) = tokio::try_join!(insert_processor_task, batch_collector_task)?;
+    r1?;
+
     Ok(())
 }
 
@@ -280,12 +438,12 @@ async fn job_update_processor(
 
             let canceled_at: Option<SystemTime> = row.get("canceled_at");
             logger.debug(&format!("Update job {id}: is_canceled: {}", canceled_at.is_some()));
-            toggle_client_job(id.clone(), row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
+            toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
 
             if canceled_at.is_none() && notification.generate_missing {
                 // this will be on startup to generate embeddings for rows that might be inserted
                 // while daemon is offline
-                job_insert_queue_tx.send(JobInsertNotification { id: id.clone(), init: false, filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None }).await?;
+                job_insert_queue_tx.send(JobInsertNotification { id, init: false, startup: true, filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
             }
         }
         Ok(()) as AnyhowVoidResult
@@ -294,30 +452,32 @@ async fn job_update_processor(
     Ok(())
 }
 
-async fn create_data_path(logger: Arc<Logger>) ->  &'static str {
+async fn create_data_path(logger: Arc<Logger>) -> &'static str {
     let tmp_path = "/tmp/lantern-daemon";
     let data_path = if cfg!(target_os = "macos") {
         "/usr/local/var/lantern-daemon"
     } else {
         "/var/lib/lantern-daemon"
     };
-    
+
     let data_path_obj = Path::new(data_path);
     if data_path_obj.exists() {
         return data_path;
     }
-    
+
     if fs::create_dir(data_path).await.is_ok() {
         return data_path;
     }
 
-    logger.warn(&format!("No write permission in directory {data_path}. Writing data to temp directory"));
+    logger.warn(&format!(
+        "No write permission in directory {data_path}. Writing data to temp directory"
+    ));
     let tmp_path_obj = Path::new(tmp_path);
 
     if tmp_path_obj.exists() {
         return tmp_path;
     }
-    
+
     fs::create_dir(tmp_path).await.unwrap();
     tmp_path
 }

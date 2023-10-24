@@ -4,7 +4,7 @@ use tokio_postgres::Row;
 
 #[derive(Debug)]
 pub struct Job {
-    pub id: String,
+    pub id: i32,
     pub is_init: bool,
     pub db_uri: String,
     pub schema: String,
@@ -19,7 +19,7 @@ pub struct Job {
 impl Job {
     pub fn new(row: Row) -> Job {
         Self {
-            id: row.get::<&str, String>("id"),
+            id: row.get::<&str, i32>("id"),
             db_uri: row.get::<&str, String>("db_uri"),
             schema: row.get::<&str, String>("schema"),
             table: row.get::<&str, String>("table"),
@@ -42,14 +42,16 @@ impl Job {
 }
 
 pub struct JobInsertNotification {
-    pub id: String,
+    pub id: i32,
     pub init: bool,
+    pub startup: bool,
+    pub row_id: Option<String>,
     pub filter: Option<String>,
     pub limit: Option<u32>,
 }
 
 pub struct JobUpdateNotification {
-    pub id: String,
+    pub id: i32,
     pub generate_missing: bool,
 }
 
