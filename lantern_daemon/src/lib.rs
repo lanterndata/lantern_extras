@@ -68,7 +68,6 @@ async fn db_notification_listener(
                             .send(JobInsertNotification {
                                 id,
                                 init: true,
-                                startup: false,
                                 row_id: None,
                                 filter: None,
                                 limit: None,
@@ -416,18 +415,25 @@ async fn job_update_processor(
         while let Some(notification) = update_queue_rx.recv().await {
             let full_table_name =  get_full_table_name(&schema, &table);
             let id = notification.id;
-            let row = client.query_one(&format!("SELECT db_connection as db_uri, dst_column, src_column as \"column\", \"table\", \"schema\", canceled_at FROM {0} WHERE id={id}", &full_table_name), &[]).await?;
+            let row = client.query_one(&format!("SELECT db_connection as db_uri, dst_column, src_column as \"column\", \"table\", \"schema\", canceled_at, init_finished_at FROM {0} WHERE id={id}", &full_table_name), &[]).await?;
             let src_column = row.get::<&str, String>("column").to_owned();
             let out_column = row.get::<&str, String>("dst_column").to_owned();
 
             let canceled_at: Option<SystemTime> = row.get("canceled_at");
-            logger.debug(&format!("Update job {id}: is_canceled: {}", canceled_at.is_some()));
-            toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
+            let init_finished_at: Option<SystemTime> = row.get("init_finished_at");
+
+            if !notification.generate_missing {
+              logger.debug(&format!("Update job {id}: is_canceled: {}", canceled_at.is_some()));
+            }
+
+            if init_finished_at.is_none() {
+              toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
+            }
 
             if canceled_at.is_none() && notification.generate_missing {
                 // this will be on startup to generate embeddings for rows that might be inserted
                 // while daemon is offline
-                job_insert_queue_tx.send(JobInsertNotification { id, init: false, startup: true, filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
+                job_insert_queue_tx.send(JobInsertNotification { id, init: init_finished_at.is_none(), filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
             }
         }
         Ok(()) as AnyhowVoidResult
