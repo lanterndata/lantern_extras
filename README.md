@@ -245,6 +245,7 @@ Lantern CLI can be used in daemon mode to continousely listen to postgres table 
 ```
 
 This will set up trigger on specified table (`lantern_jobs`) and when new row will be inserted it will start embedding generation based on row data.
+After that the triggers will be set up in target table, so it will generate embeddings continousely for that table.
 The jobs table should have the following structure
 
 ```sql
