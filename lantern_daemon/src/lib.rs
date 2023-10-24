@@ -1,9 +1,9 @@
 pub mod cli;
-mod client;
+mod client_jobs;
 mod helpers;
 mod types;
 
-use client::toggle_client_job;
+use client_jobs::toggle_client_job;
 use futures::{future, StreamExt};
 use helpers::{check_table_exists, get_full_table_name};
 use lantern_embeddings::cli::EmbeddingArgs;
