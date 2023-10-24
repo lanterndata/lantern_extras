@@ -117,9 +117,8 @@ fn embedding_worker(
             let mut input_ids: Vec<String> = Vec::with_capacity(rows.len());
 
             for row in &rows {
-                let col: Option<&str> = row.get(1);
-                if col.is_some() {
-                    input_vectors.push(col.unwrap());
+                if let Some(src_data) = row.get::<usize, Option<&str>>(1) {
+                    input_vectors.push(src_data);
                     input_ids.push(row.get::<usize, String>(0));
                 }
             }
@@ -156,7 +155,11 @@ fn embedding_worker(
             for _ in 0..response_embeddings.len() {
                 response_data.push((input_ids.pop().unwrap(), response_embeddings.pop().unwrap()));
             }
-            tx.send(response_data).unwrap();
+
+            if tx.send(response_data).is_err() {
+                // Error occured in exporter worker and channel has been closed
+                break;
+            }
         }
 
         if count > 0 {
@@ -190,6 +193,21 @@ fn db_exporter_worker(
         let schema = &args.schema;
 
         let mut client = Client::connect(&uri, NoTls)?;
+
+        // Try to add the target column and check if user has write permissions to table
+        let mut check_transaction = client.transaction()?;
+        let res = check_transaction.execute(
+            &format!(
+                "ALTER TABLE \"{schema}\".\"{table}\" ADD COLUMN IF NOT EXISTS \"{column}\" REAL[]"
+            ),
+            &[],
+        );
+
+        if res.is_err() {
+            anyhow::bail!("User does not have write permissions to target table");
+        }
+        check_transaction.commit()?;
+
         let mut transaction = client.transaction()?;
         let mut rng = rand::thread_rng();
         let temp_table_name = format!("_lantern_tmp_{}", rng.gen_range(0..1000));
@@ -205,6 +223,13 @@ fn db_exporter_worker(
         let mut transaction = client.transaction()?;
         let mut writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"))?;
         let mut did_receive = false;
+        let update_sql = &format!("UPDATE \"{schema}\".\"{table}\" dest SET \"{column}\" = src.\"{column}\" FROM \"{temp_table_name}\" src WHERE src.\"{pk}\" = dest.\"{pk}\"");
+
+        let flush_interval = 10;
+        let min_flush_rows = 50;
+        let mut start = Instant::now();
+        let mut collected_row_cnt = 0;
+
         while let Ok(rows) = rx.recv() {
             if !did_receive {
                 did_receive = true;
@@ -219,8 +244,32 @@ fn db_exporter_worker(
                 drop(row_str);
                 writer.write("}".as_bytes())?;
                 writer.write("\n".as_bytes())?;
+                collected_row_cnt += 1;
             }
             drop(rows);
+
+            if !args.stream {
+                continue;
+            }
+
+            if flush_interval <= start.elapsed().as_secs() && collected_row_cnt >= min_flush_rows {
+                // if job is run in streaming mode
+                // it will write results to target table each 10 seconds (if collected rows are
+                // more than 50)
+                writer.flush()?;
+                writer.finish()?;
+                transaction.batch_execute(&format!(
+                    "
+                    {update_sql};
+                    TRUNCATE TABLE {temp_table_name};
+                "
+                ))?;
+                transaction.commit()?;
+                transaction = client.transaction()?;
+                writer = transaction.copy_in(&format!("COPY {temp_table_name} FROM stdin"))?;
+                collected_row_cnt = 0;
+                start = Instant::now();
+            }
         }
 
         if !did_receive {
@@ -229,19 +278,7 @@ fn db_exporter_worker(
 
         writer.flush()?;
         writer.finish()?;
-        transaction.execute(
-            &format!(
-                "ALTER TABLE \"{schema}\".\"{table}\" ADD COLUMN IF NOT EXISTS \"{column}\" REAL[]"
-            ),
-            &[],
-        )?;
-        transaction
-            .execute(
-                &format!(
-                "UPDATE \"{schema}\".\"{table}\" dest SET \"{column}\" = src.\"{column}\" FROM \"{temp_table_name}\" src WHERE src.\"{pk}\" = dest.\"{pk}\""
-            ),
-                &[],
-            )?;
+        transaction.execute(update_sql, &[])?;
         transaction.commit()?;
         logger.info(&format!(
             "Embeddings exported to table {} under column {}",
@@ -349,8 +386,9 @@ pub fn create_embeddings_from_db(
     Ok(())
 }
 
-pub fn show_available_models(args: &cli::ShowModelsArgs) {
+pub fn show_available_models(args: &cli::ShowModelsArgs) -> AnyhowVoidResult {
     let logger = Logger::new("Lantern Embeddings", LogLevel::Info);
     logger.info("Available Models\n");
     logger.print_raw(&clip::get_available_models(args.data_path.as_deref()));
+    Ok(())
 }

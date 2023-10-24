@@ -62,6 +62,10 @@ pub struct EmbeddingArgs {
     /// Limit will be applied to source table if specified
     #[arg(short, long)]
     pub limit: Option<u32>,
+
+    /// Stream data to output table while still generating
+    #[arg(long, default_value_t = false)]
+    pub stream: bool,
 }
 
 impl EmbeddingArgs {
