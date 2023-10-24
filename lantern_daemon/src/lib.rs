@@ -249,7 +249,7 @@ async fn collect_pending_jobs(
     // Get all pending jobs and set them in queue
     let rows = client
         .query(
-            &format!("SELECT id  FROM {table} WHERE init_failed_at IS NULL ORDER BY id"),
+            &format!("SELECT id FROM {table} WHERE init_failed_at IS NULL ORDER BY id"),
             &[],
         )
         .await?;
@@ -331,6 +331,15 @@ async fn job_insert_processor(
                 continue;
             }
 
+            // TODO
+            // when we are checking !notification.generate_missing we are excluding job "locking"
+            // so in case if we have more than one daemons running and job will change
+            // `canceled_at` to NULL (e.g. resume job) all daemons will try to generate embeddings
+            // for the missing rows. This will be okay if we every time reset init_start/finish
+            // times when changing canceled_at to NULL and remove this generate_missing check.
+            // This case is also about the startup pending job collector. As there might be a case
+            // when job was failed on init and if 2 daemons will start-up at the same time both
+            // will pick that job and try to generate embeddings (though this is very rare case)
             if notification.init && !notification.generate_missing {
                 // Only update init time if this is the first time job is being executed
                 let updated_count = client_r1.execute(&format!("UPDATE {0} SET init_started_at=NOW() WHERE init_started_at IS NULL AND id={id}", &full_table_name_r1), &[]).await?;
