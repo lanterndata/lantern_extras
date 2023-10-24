@@ -243,42 +243,25 @@ async fn startup_hook(
 
 async fn collect_pending_jobs(
     client: Arc<Client>,
-    insert_notification_tx: Sender<JobInsertNotification>,
     update_notification_tx: Sender<JobUpdateNotification>,
     table: String,
 ) -> AnyhowVoidResult {
     // Get all pending jobs and set them in queue
     let rows = client
         .query(
-            &format!(
-                "SELECT id, canceled_at, init_finished_at, src_column, dst_column FROM {table} WHERE init_failed_at IS NULL ORDER BY created_at"
-            ),
+            &format!("SELECT id  FROM {table} WHERE init_failed_at IS NULL ORDER BY id"),
             &[],
         )
         .await?;
 
     for row in rows {
-        let init_finished_at: Option<SystemTime> = row.get("init_finished_at");
         // TODO This can be optimized
-        if init_finished_at.is_none() {
-            insert_notification_tx
-                .send(JobInsertNotification {
-                    id: row.get::<usize, i32>(0).to_owned(),
-                    init: true,
-                    startup: false,
-                    row_id: None,
-                    filter: None,
-                    limit: None,
-                })
-                .await?;
-        } else {
-            update_notification_tx
-                .send(JobUpdateNotification {
-                    id: row.get::<usize, i32>(0).to_owned(),
-                    generate_missing: true,
-                })
-                .await?;
-        }
+        update_notification_tx
+            .send(JobUpdateNotification {
+                id: row.get::<usize, i32>(0).to_owned(),
+                generate_missing: true,
+            })
+            .await?;
     }
 
     Ok(())
@@ -550,7 +533,6 @@ pub async fn start(args: cli::DaemonArgs) -> Result<(), anyhow::Error> {
         )) as VoidFuture,
         Box::pin(collect_pending_jobs(
             main_db_client.clone(),
-            insert_notification_queue_tx.clone(),
             update_notification_queue_tx.clone(),
             args.table.clone(),
         )) as VoidFuture,
