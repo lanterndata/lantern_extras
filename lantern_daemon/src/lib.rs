@@ -6,6 +6,7 @@ mod types;
 use client_jobs::toggle_client_job;
 use futures::{future, StreamExt};
 use helpers::{check_table_exists, get_full_table_name};
+use itertools::Itertools;
 use lantern_embeddings::cli::EmbeddingArgs;
 use lantern_logger::Logger;
 use std::collections::HashMap;
@@ -395,10 +396,7 @@ async fn job_insert_processor(
                 // TODO take from job
                 let pk = "id";
                 job.set_is_init(false);
-                // TODO this currently will work only for numeric ids
-                // Should check the column type and wrap id's inside single quotes if type id type
-                // is not numeric
-                let row_ids_str = row_ids.join(",");
+                let row_ids_str = row_ids.iter().map(|r| format!("'{r}'")).join(",");
                 job.set_filter(&format!("\"{pk}\" IN ({row_ids_str})"));
                 let _ = job_tx.send(job).await;
             }
