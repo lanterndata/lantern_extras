@@ -324,8 +324,14 @@ fn get_default_batch_size(model: &str) -> usize {
     match model {
         "clip/ViT-B-32-textual" => 500,
         "clip/ViT-B-32-visual" => 100,
+        "BAAI/bge-small-en" => 500,
         "BAAI/bge-base-en" => 100,
         "BAAI/bge-large-en" => 40,
+        "infloat/e5-base-v2" => 100,
+        "infloat/e5-large-v2" => 40,
+        "llmrails/ember-v1" => 100,
+        "thenlper/gte-base" => 100,
+        "thenlper/gte-large" => 40,
         _ => 100,
     }
 }

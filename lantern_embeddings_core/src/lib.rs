@@ -47,8 +47,14 @@ lazy_static! {
     static ref MODEL_INFO_MAP: RwLock<HashMap<&'static str, ModelInfo>> = RwLock::new(HashMap::from([
         ("clip/ViT-B-32-textual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 77, pad_tokens: true, use_tokenizer: true, input_image_size: None}}),
         ("clip/ViT-B-32-visual", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/visual/model.onnx", tokenizer_url: None, encoder_args: EncoderOptions{visual:true, input_image_size: Some(224), use_tokenizer: false, pad_tokens: false, max_tokens: 0 } }),
-        ("BAAI/bge-base-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("BAAI/bge-small-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-small-en-v1.5/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-small-en-v1.5/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("BAAI/bge-base-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en-v1.5/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en-v1.5/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
         ("BAAI/bge-large-en", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en-v1.5/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en-v1.5/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("intfloat/e5-base-v2", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/intfloat/e5-base-v2/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/intfloat/e5-base-v2/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("intfloat/e5-large-v2", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/intfloat/e5-large-v2/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/intfloat/e5-large-v2/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("llmrails/ember-v1", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/llmrails/ember-v1/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/llmrails/ember-v1/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("thenlper/gte-base", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/thenlper/gte-base/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/thenlper/gte-base/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
+        ("thenlper/gte-large", ModelInfo{encoder: None, url: "https://huggingface.co/varik77/onnx-models/resolve/main/thenlper/gte-large/model.onnx", tokenizer_url: Some("https://huggingface.co/varik77/onnx-models/resolve/main/thenlper/gte-large/tokenizer.json"), encoder_args: EncoderOptions{visual:false, max_tokens: 512, use_tokenizer: true, pad_tokens: false, input_image_size: None}}),
     ]));
 }
 
@@ -238,8 +244,14 @@ impl EncoderService {
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         match self.name.as_str() {
             "clip/ViT-B-32-textual" => self.process_text_clip(text),
+            "BAAI/bge-small-en" => self.process_text_bge(text),
             "BAAI/bge-base-en" => self.process_text_bge(text),
             "BAAI/bge-large-en" => self.process_text_bge(text),
+            "intfloat/e5-base-v2" => self.process_text_bge(text),
+            "intfloat/e5-large-v2" => self.process_text_bge(text),
+            "llmrails/ember-v1" => self.process_text_bge(text),
+            "thenlper/gte-base" => self.process_text_bge(text),
+            "thenlper/gte-large" => self.process_text_bge(text),
             _ => self.process_text_clip(text),
         }
     }
