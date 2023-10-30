@@ -332,6 +332,9 @@ fn get_default_batch_size(model: &str) -> usize {
         "llmrails/ember-v1" => 100,
         "thenlper/gte-base" => 100,
         "thenlper/gte-large" => 40,
+        "microsoft/all-MiniLM-L12-v2" => 500,
+        "microsoft/all-mpnet-base-v2" => 100,
+        "transformers/multi-qa-mpnet-base-dot-v1" => 50,
         _ => 100,
     }
 }
