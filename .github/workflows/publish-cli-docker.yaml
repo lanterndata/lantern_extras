@@ -6,7 +6,7 @@ on:
         type: string
         description: "CLI version"
         required: true
-        default: "0.3"
+        default: "0.0.3"
       IMAGE_NAME:
         type: string
         description: "Container image name to tag"
@@ -42,4 +42,4 @@ jobs:
           file: Dockerfile.cli${{ (matrix.device == 'gpu' && '.cuda' || '') }}
           push: true
           # the :latest tag will refer to cpu version
-          tags: ${{ (matrix.device == 'cpu' && format('{0}:latest', inputs.IMAGE_NAME) || '') }},${{ inputs.IMAGE_NAME }}:latest-${{ matrix.device }},${{ inputs.IMAGE_NAME }}:${{ inputs.VERSION }}-${{ matrix.device }}
+          tags: ${{ (matrix.device == 'cpu' && format('{0}:latest', inputs.IMAGE_NAME) || format('{0}:gpu', inputs.IMAGE_NAME)) }},${{ inputs.IMAGE_NAME }}:latest-${{ matrix.device }},${{ inputs.IMAGE_NAME }}:${{ inputs.VERSION }}-${{ matrix.device }}
