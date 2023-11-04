@@ -204,7 +204,7 @@ fn db_exporter_worker(
         let temp_table_name = format!("_lantern_tmp_{}", rng.gen_range(0..1000));
 
         // Try to check if user has write permissions to table
-        let res = transaction.query("SELECT 1 FROM information_schema.column_privileges WHERE table_name=$1 AND privilege_type='UPDATE' AND column_name=$2 AND grantee = current_user", &[table, column])?;
+        let res = transaction.query("SELECT 1 FROM information_schema.column_privileges WHERE table_schema=$1 AND table_name=$2 AND column_name=$3 AND privilege_type='UPDATE' AND grantee=current_user", &[schema, table, column])?;
 
         if res.get(0).is_none() {
             anyhow::bail!("User does not have write permissions to target table");
