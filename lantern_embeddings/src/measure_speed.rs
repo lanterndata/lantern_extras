@@ -46,12 +46,13 @@ fn measure_model_speed(
         let processed = crate::create_embeddings_from_db(args, false, None, Some(logger))?;
         let elapsed = start.elapsed();
 
-        if elapsed.as_millis() >= 1000 {
-            if i == 0 {
-                // skip first iteration to not count the downloading and cold start time
-                i = 1;
-                continue;
-            }
+        if i == 0 {
+            // skip first iteration to not count the downloading and cold start time
+            i = 1;
+            continue;
+        }
+
+        if elapsed.as_millis() >= 4000 {
             speed = processed as u64 / elapsed.as_secs() as u64;
             break;
         }
@@ -69,7 +70,7 @@ pub fn start_speed_test(args: &MeasureModelSpeedArgs, logger: Option<Logger>) ->
        CREATE SCHEMA {SCHEMA_NAME};
        SET search_path TO {SCHEMA_NAME};
        CREATE TABLE {TABLE_NAME} ({PK_NAME} SERIAL PRIMARY KEY, {COLUMN_NAME} TEXT, {OUT_COLUMN_NAME} REAL[]);
-       INSERT INTO {TABLE_NAME} SELECT generate_series(0, 3000), 'title';
+       INSERT INTO {TABLE_NAME} SELECT generate_series(0, 5000), 'title';
     "))?;
     client.execute(
         &format!("UPDATE {TABLE_NAME} SET {COLUMN_NAME}=$1;"),

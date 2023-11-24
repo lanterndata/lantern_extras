@@ -158,11 +158,8 @@ fn embedding_worker(
                 continue;
             }
 
-            let response_embeddings = if args.visual {
-                clip::process_image(&model, &input_vectors, None, data_path.as_deref())
-            } else {
-                clip::process_text(&model, &input_vectors, None, data_path.as_deref())
-            };
+            let response_embeddings =
+                clip::process(&model, &input_vectors, None, data_path.as_deref(), false);
 
             if let Err(e) = response_embeddings {
                 anyhow::bail!("{}", e);
