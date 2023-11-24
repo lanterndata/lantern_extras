@@ -54,7 +54,7 @@ fn measure_model_speed(
             continue;
         }
 
-        if elapsed.as_millis() >= 4000 {
+        if elapsed.as_millis() >= 1500 {
             speed = processed as u64 / elapsed.as_secs() as u64;
             break;
         }
