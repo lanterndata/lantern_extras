@@ -104,4 +104,8 @@ pub struct MeasureModelSpeedArgs {
     /// Fully associated database connection string including db name
     #[arg(short, long)]
     pub uri: String,
+
+    /// Initial limit size for tests
+    #[arg(short, long, default_value_t = 500)]
+    pub initial_limit: u32,
 }

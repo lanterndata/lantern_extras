@@ -17,8 +17,10 @@ fn measure_model_speed(
     data_path: &Option<String>,
     model_name: &str,
     db_uri: &str,
+    table_name: &str,
+    initial_limit: u32,
 ) -> AnyhowU64Result {
-    let mut limit = 100;
+    let mut limit = initial_limit;
     let speed: u64;
     let mut i = 0;
     loop {
@@ -32,7 +34,7 @@ fn measure_model_speed(
             column: COLUMN_NAME.to_owned(),
             out_column: OUT_COLUMN_NAME.to_owned(),
             schema: SCHEMA_NAME.to_owned(),
-            table: TABLE_NAME.to_owned(),
+            table: table_name.to_owned(),
             out_uri: None,
             out_csv: None,
             out_table: None,
@@ -64,16 +66,21 @@ fn measure_model_speed(
 
 pub fn start_speed_test(args: &MeasureModelSpeedArgs, logger: Option<Logger>) -> AnyhowVoidResult {
     // connect to database
+    let table_name_small = format!("{TABLE_NAME}_min");
+    let table_name_large = format!("{TABLE_NAME}_max");
+
     let mut client = Client::connect(&args.uri, NoTls)?;
     client.batch_execute(&format!("
        DROP SCHEMA IF EXISTS {SCHEMA_NAME} CASCADE;
        CREATE SCHEMA {SCHEMA_NAME};
        SET search_path TO {SCHEMA_NAME};
-       CREATE TABLE {TABLE_NAME} ({PK_NAME} SERIAL PRIMARY KEY, {COLUMN_NAME} TEXT, {OUT_COLUMN_NAME} REAL[]);
-       INSERT INTO {TABLE_NAME} SELECT generate_series(0, 5000), 'title';
+       CREATE TABLE {table_name_small} ({PK_NAME} SERIAL PRIMARY KEY, {COLUMN_NAME} TEXT, {OUT_COLUMN_NAME} REAL[]);
+       CREATE TABLE {table_name_large} ({PK_NAME} SERIAL PRIMARY KEY, {COLUMN_NAME} TEXT, {OUT_COLUMN_NAME} REAL[]);
+       INSERT INTO {table_name_small} SELECT generate_series(0, 5000), 'My small title text!';
+       INSERT INTO {table_name_large} SELECT generate_series(0, 5000), 'title';
     "))?;
     client.execute(
-        &format!("UPDATE {TABLE_NAME} SET {COLUMN_NAME}=$1;"),
+        &format!("UPDATE {table_name_large} SET {COLUMN_NAME}=$1;"),
         &[&LOREM_TEXT],
     )?;
 
@@ -99,8 +106,25 @@ pub fn start_speed_test(args: &MeasureModelSpeedArgs, logger: Option<Logger>) ->
 
     let logger = logger.unwrap_or(Logger::new("Lantern Embeddings", LogLevel::Info));
     for model_name in models {
-        let speed = measure_model_speed(&args.data_path, &model_name, &args.uri)?;
-        logger.info(&format!("{model_name} - {speed} emb/s"));
+        let speed_max = measure_model_speed(
+            &args.data_path,
+            &model_name,
+            &args.uri,
+            &table_name_small,
+            args.initial_limit,
+        )?;
+        let speed_min = measure_model_speed(
+            &args.data_path,
+            &model_name,
+            &args.uri,
+            &table_name_large,
+            args.initial_limit,
+        )?;
+        let speed_avg = (speed_min + speed_max) / 2;
+
+        logger.info(&format!("{model_name} max speed - {speed_max} emb/s"));
+        logger.info(&format!("{model_name} min speed - {speed_min} emb/s"));
+        logger.info(&format!("{model_name} avg speed - {speed_avg} emb/s"));
     }
     client.execute(&format!("DROP SCHEMA {SCHEMA_NAME} CASCADE"), &[])?;
     Ok(())
