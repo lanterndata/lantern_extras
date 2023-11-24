@@ -576,10 +576,11 @@ pub mod clip {
         }
     }
 
-    pub fn get_available_models(data_path: Option<&str>) -> String {
+    pub fn get_available_models(data_path: Option<&str>) -> (String, Vec<(String, bool)>) {
         let map = MODEL_INFO_MAP.read().unwrap();
         let mut res = String::new();
         let data_path = data_path.unwrap_or(DATA_PATH);
+        let mut models = Vec::with_capacity(map.len());
         for (key, value) in &*map {
             let model_exists =
                 if Path::join(&Path::new(data_path), format!("{}/model.onnx", key)).exists() {
@@ -597,8 +598,9 @@ pub mod clip {
                 "{} - type: {}, downloaded: {}\n",
                 key, model_type, model_exists
             ));
+            models.push((key.to_string(), value.encoder_args.visual));
         }
 
-        return res;
+        return (res, models);
     }
 }

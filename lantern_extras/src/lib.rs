@@ -74,7 +74,7 @@ fn clip_image<'a>(path_or_url: &'a str) -> Vec<f32> {
 
 #[pg_extern(immutable, parallel_safe)]
 fn get_available_models() -> String {
-    return lantern_embeddings_core::clip::get_available_models(None);
+    return lantern_embeddings_core::clip::get_available_models(None).0;
 }
 
 #[pg_extern]

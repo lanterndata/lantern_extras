@@ -14,6 +14,7 @@ use std::time::Instant;
 use postgres::{Client, NoTls, Row};
 
 pub mod cli;
+pub mod measure_speed;
 
 type EmbeddingRecord = (String, Vec<f32>);
 type AnyhowVoidResult = Result<(), anyhow::Error>;
@@ -457,6 +458,6 @@ pub fn show_available_models(
 ) -> AnyhowVoidResult {
     let logger = logger.unwrap_or(Logger::new("Lantern Embeddings", LogLevel::Info));
     logger.info("Available Models\n");
-    logger.print_raw(&clip::get_available_models(args.data_path.as_deref()));
+    logger.print_raw(&clip::get_available_models(args.data_path.as_deref()).0);
     Ok(())
 }
