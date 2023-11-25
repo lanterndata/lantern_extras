@@ -1,3 +1,5 @@
+extern crate postgres;
+
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -12,6 +14,11 @@ use usearch::ffi::*;
 mod utils;
 
 pub mod cli;
+mod postgres_large_objects;
+
+use crate::postgres_large_objects::{LargeObjectExt, LargeObjectTransactionExt, Mode};
+
+type AnyhowVoidResult = Result<(), anyhow::Error>;
 
 #[derive(Debug)]
 struct Tid {
@@ -54,13 +61,13 @@ fn index_chunk(
     thread_n: usize,
     index: Arc<ThreadSafeIndex>,
     logger: Arc<Logger>,
-) -> Result<(), anyhow::Error> {
+) -> AnyhowVoidResult {
     let row_count = rows.len();
 
     for row in rows {
         let ctid: Tid = row.get(0);
         let vec: Vec<f32> = row.get(1);
-        index.add_in_thread(ctid.label, &vec, thread_n);
+        index.add_in_thread(ctid.label, &vec, thread_n)?;
     }
     logger.debug(&format!(
         "{} items added to index from thread {}",
@@ -74,11 +81,13 @@ struct ThreadSafeIndex {
 }
 
 impl ThreadSafeIndex {
-    fn add_in_thread(&self, label: u64, data: &Vec<f32>, thread: usize) {
-        self.inner.add_in_thread(label, data, thread).unwrap();
+    fn add_in_thread(&self, label: u64, data: &Vec<f32>, thread: usize) -> AnyhowVoidResult {
+        self.inner.add_in_thread(label, data, thread)?;
+        Ok(())
     }
-    fn save(&self, path: &str) {
-        self.inner.save(path).unwrap();
+    fn save(&self, path: &str) -> AnyhowVoidResult {
+        self.inner.save(path)?;
+        Ok(())
     }
 }
 
@@ -88,6 +97,7 @@ unsafe impl Send for ThreadSafeIndex {}
 pub fn create_usearch_index(
     args: &cli::CreateIndexArgs,
     logger: Option<Logger>,
+    client: Option<Client>,
 ) -> Result<(), anyhow::Error> {
     let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug)));
     logger.info(&format!(
@@ -109,7 +119,7 @@ pub fn create_usearch_index(
 
     let index = new_index(&options)?;
     // get all row count
-    let mut client = Client::connect(&args.uri, NoTls).unwrap();
+    let mut client = client.unwrap_or(Client::connect(&args.uri, NoTls)?);
     let mut transaction = client.transaction()?;
     let rows = transaction.query(
         &format!(
@@ -140,41 +150,48 @@ pub fn create_usearch_index(
         let logger_ref = logger.clone();
         let receiver = rx_arc.clone();
 
-        let handle = std::thread::spawn(move || loop {
-            let rx = receiver.lock().unwrap();
-            let rows = rx.recv();
-            // release the lock so other threads can take rows
-            drop(rx);
+        let handle = std::thread::spawn(move || -> AnyhowVoidResult {
+            loop {
+                let lock = receiver.lock();
 
-            if rows.is_err() {
-                // channel has been closed
-                break;
+                if let Err(e) = lock {
+                    anyhow::bail!("{e}");
+                }
+
+                let rx = lock.unwrap();
+                let rows = rx.recv();
+                // release the lock so other threads can take rows
+                drop(rx);
+
+                if rows.is_err() {
+                    // channel has been closed
+                    break;
+                }
+                let rows = rows.unwrap();
+                index_chunk(rows, n, index_ref.clone(), logger_ref.clone())?;
             }
-            let rows = rows.unwrap();
-            index_chunk(rows, n, index_ref.clone(), logger_ref.clone()).unwrap();
+            Ok(())
         });
         handles.push(handle);
     }
 
     // With portal we can execute a query and poll values from it in chunks
-    let portal = transaction
-        .bind(
-            &format!(
-                "SELECT ctid, {} FROM {};",
-                quote_ident(&args.column),
-                get_full_table_name(&args.schema, &args.table)
-            ),
-            &[],
-        )
-        .unwrap();
+    let portal = transaction.bind(
+        &format!(
+            "SELECT ctid, {} FROM {};",
+            quote_ident(&args.column),
+            get_full_table_name(&args.schema, &args.table)
+        ),
+        &[],
+    )?;
 
     loop {
         // poll 2000 rows from portal and send it to worker threads via channel
-        let rows = transaction.query_portal(&portal, 2000).unwrap();
+        let rows = transaction.query_portal(&portal, 2000)?;
         if rows.len() == 0 {
             break;
         }
-        tx.send(rows).unwrap();
+        tx.send(rows)?;
     }
 
     // Exit all channels
@@ -182,10 +199,12 @@ pub fn create_usearch_index(
 
     // Wait for all threads to finish processing
     for handle in handles {
-        handle.join().unwrap();
+        if let Err(e) = handle.join() {
+            anyhow::bail!("Erro while joining thread: {:?}", e);
+        }
     }
 
-    index_arc.save(&args.out);
+    index_arc.save(&args.out)?;
     logger.info(&format!("Index saved under {}", &args.out));
     Ok(())
 }
