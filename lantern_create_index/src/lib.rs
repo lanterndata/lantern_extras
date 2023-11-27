@@ -1,22 +1,24 @@
 extern crate postgres;
 
+use rand::Rng;
+use std::path::Path;
 use std::sync::mpsc;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
+use std::{fs, io};
 
 use cxx::UniquePtr;
 use lantern_logger::{LogLevel, Logger};
 use lantern_utils::{get_full_table_name, quote_ident};
 use postgres::{Client, NoTls, Row};
+use postgres_large_objects::LargeObject;
 use postgres_types::FromSql;
 use usearch::ffi::*;
 
+mod postgres_large_objects;
 mod utils;
 
 pub mod cli;
-mod postgres_large_objects;
-
-use crate::postgres_large_objects::{LargeObjectExt, LargeObjectTransactionExt, Mode};
 
 type AnyhowVoidResult = Result<(), anyhow::Error>;
 
@@ -206,5 +208,28 @@ pub fn create_usearch_index(
 
     index_arc.save(&args.out)?;
     logger.info(&format!("Index saved under {}", &args.out));
+
+    if args.import {
+        transaction.commit()?;
+        let mut rng = rand::thread_rng();
+        let index_path = format!("/tmp/index-{}.usearch", rng.gen_range(0..1000));
+        let transaction = client.transaction()?;
+        let mut large_object = LargeObject::new(transaction, &index_path);
+        large_object.create()?;
+        let oid = large_object.oid.clone();
+        let mut reader = fs::File::open(Path::new(&args.out))?;
+        io::copy(&mut reader, &mut large_object)?;
+        large_object.finish(
+            &get_full_table_name(&args.schema, &args.table),
+            &quote_ident(&args.column),
+        )?;
+        LargeObject::remove_from_remote_fs(&mut client, oid.unwrap(), &index_path)?;
+        fs::remove_file(Path::new(&args.out))?;
+        logger.info(&format!(
+            "Index imported to table {} and removed from filesystem",
+            &args.table
+        ));
+    }
+
     Ok(())
 }

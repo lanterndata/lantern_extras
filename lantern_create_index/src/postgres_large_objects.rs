@@ -1,22 +1,84 @@
-use postgres::Client;
+use postgres::{Client, Transaction};
+use postgres_types::Oid;
+use std::{cmp, io};
 
-pub fn import_index(client: &Client, index_data: &[u8]) {
-    client.batch_execute(&format!(
-        "
-CREATE OR REPLACE FUNCTION import_index_file() RETURNS VOID AS $$
-DECLARE
-  lo_oid OID;
-  fd INT;
-BEGIN
-    lo_oid := pg_catalog.lo_create(0);
-    fd := pg_catalog.lo_open(lo_oid, 131072);
-    PERFORM pg_catalog.lowrite(fd, 'test1');
-    PERFORM pg_catalog.lowrite(fd, 'test2');
-    PERFORM lo_export(lo_oid, '/tmp/index.usearch');
-    -- then change in lantern to read from lo instead of file
-END;
-$$ LANGUAGE plpgsql;
-",
-        index_data
-    ));
+pub struct LargeObject<'a> {
+    transaction: Option<Transaction<'a>>,
+    fd: Option<i32>,
+    pub oid: Option<Oid>,
+    index_path: String,
+}
+
+impl<'a> LargeObject<'a> {
+    pub fn new(transaction: Transaction<'a>, index_path: &str) -> LargeObject<'a> {
+        LargeObject {
+            transaction: Some(transaction),
+            oid: None,
+            fd: None,
+            index_path: index_path.to_owned(),
+        }
+    }
+
+    pub fn create(&mut self) -> crate::AnyhowVoidResult {
+        let transaction = self.transaction.as_mut().unwrap();
+        let lo_oid = transaction.query_one("SELECT pg_catalog.lo_create(0)", &[])?;
+        let lo_oid: Oid = lo_oid.get(0);
+        let fd = transaction.query_one("SELECT pg_catalog.lo_open($1, 131072)", &[&lo_oid])?;
+        let fd: i32 = fd.get(0);
+        self.fd = Some(fd);
+        self.oid = Some(lo_oid);
+        Ok(())
+    }
+
+    pub fn finish(self, table_name: &str, column_name: &str) -> crate::AnyhowVoidResult {
+        let transaction = self.transaction;
+        let mut transaction = transaction.unwrap();
+        transaction.execute(
+            "SELECT pg_catalog.lo_export($1, $2)",
+            &[&self.oid.unwrap(), &self.index_path],
+        )?;
+
+        transaction.execute(
+            &format!("CREATE INDEX ON {table_name} USING hnsw({column_name}) WITH (_experimental_index_path='{index_path}');", index_path=self.index_path),
+            &[],
+        )?;
+
+        transaction.commit()?;
+        Ok(())
+    }
+
+    pub fn remove_from_remote_fs(
+        client: &mut Client,
+        oid: Oid,
+        path: &str,
+    ) -> crate::AnyhowVoidResult {
+        let mut transaction = client.transaction()?;
+        let fd = transaction.query_one("SELECT pg_catalog.lo_open($1, 131072)", &[&oid])?;
+        let fd: i32 = fd.get(0);
+        transaction.execute("SELECT pg_catalog.lo_truncate($1, 0)", &[&fd])?;
+        transaction.execute("SELECT pg_catalog.lo_export($1, $2)", &[&oid, &path])?;
+        transaction.execute("SELECT pg_catalog.lo_unlink($1)", &[&oid])?;
+        transaction.commit()?;
+        Ok(())
+    }
+}
+
+impl<'a> io::Write for LargeObject<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let cap = cmp::min(buf.len(), i32::MAX as usize);
+        let transaction = self.transaction.as_mut().unwrap();
+        let res = transaction.execute(
+            "SELECT pg_catalog.lowrite($1, $2)",
+            &[&self.fd.unwrap(), &&buf[..cap]],
+        );
+
+        if let Err(e) = res {
+            return Err(io::Error::new(io::ErrorKind::Other, e));
+        }
+        Ok(cap)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
 }
