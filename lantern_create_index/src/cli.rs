@@ -80,7 +80,11 @@ pub struct CreateIndexArgs {
     #[arg(short, long, default_value = "index.usearch")] // arg_enum here
     pub out: String,
 
-    /// Import index to database (should )
+    /// Import index to database (should be run as db superuser to have access)
     #[arg(short, long, default_value_t = false)]
     pub import: bool,
+
+    /// Index name to use when imporrting index to database
+    #[arg(long)]
+    pub index_name: Option<String>,
 }

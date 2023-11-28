@@ -123,6 +123,7 @@ pub fn create_usearch_index(
     // get all row count
     let mut client = client.unwrap_or(Client::connect(&args.uri, NoTls)?);
     let mut transaction = client.transaction()?;
+
     let rows = transaction.query(
         &format!(
             "SELECT COUNT(*) FROM {};",
@@ -222,6 +223,7 @@ pub fn create_usearch_index(
         large_object.finish(
             &get_full_table_name(&args.schema, &args.table),
             &quote_ident(&args.column),
+            args.index_name.as_deref(),
         )?;
         LargeObject::remove_from_remote_fs(&mut client, oid.unwrap(), &index_path)?;
         fs::remove_file(Path::new(&args.out))?;

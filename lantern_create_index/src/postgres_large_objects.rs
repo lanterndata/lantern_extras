@@ -1,3 +1,4 @@
+use lantern_utils::quote_ident;
 use postgres::{Client, Transaction};
 use postgres_types::Oid;
 use std::{cmp, io};
@@ -30,7 +31,12 @@ impl<'a> LargeObject<'a> {
         Ok(())
     }
 
-    pub fn finish(self, table_name: &str, column_name: &str) -> crate::AnyhowVoidResult {
+    pub fn finish(
+        self,
+        table_name: &str,
+        column_name: &str,
+        index_name: Option<&str>,
+    ) -> crate::AnyhowVoidResult {
         let transaction = self.transaction;
         let mut transaction = transaction.unwrap();
         transaction.execute(
@@ -38,8 +44,14 @@ impl<'a> LargeObject<'a> {
             &[&self.oid.unwrap(), &self.index_path],
         )?;
 
+        let mut idx_name = "".to_owned();
+
+        if let Some(name) = index_name {
+            idx_name = quote_ident(name);
+        }
+
         transaction.execute(
-            &format!("CREATE INDEX ON {table_name} USING hnsw({column_name}) WITH (_experimental_index_path='{index_path}');", index_path=self.index_path),
+            &format!("CREATE INDEX {idx_name} ON {table_name} USING hnsw({column_name}) WITH (_experimental_index_path='{index_path}');", index_path=self.index_path),
             &[],
         )?;
 

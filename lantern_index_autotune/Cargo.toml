@@ -15,3 +15,5 @@ postgres = "0.19.7"
 lantern_create_index = { path = "../lantern_create_index" }
 lantern_logger = { path = "../lantern_logger" }
 lantern_utils = { path = "../lantern_utils" }
+rand = "0.8.5"
+uuid = {version = "1.6.1", features = ["v4", "fast-rng", "macro-diagnostics"]}
