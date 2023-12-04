@@ -472,7 +472,16 @@ pub mod clip {
             let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
 
             if percent_of_free_mem >= mem_threshold {
-                anyhow::bail!("Not enough free memory to run the model");
+                let mem_avail_in_mb = total_free_mem / 1024.0 / 1024.0;
+
+                // We need available_memory + percent_diff % to run the model
+                let percent_diff = percent_of_free_mem - mem_threshold;
+                let mem_needed_in_mb = mem_avail_in_mb + mem_avail_in_mb / (100.0 / percent_diff);
+                anyhow::bail!(
+                    "Not enough free memory to run the model. Memory needed: {:.2}MB, Memory available: {:.2}MB",
+                    mem_needed_in_mb,
+                    mem_avail_in_mb
+                );
             }
         }
 
@@ -630,7 +639,7 @@ pub mod clip {
             check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH), cache);
 
         if let Err(err) = download_result {
-            anyhow::bail!("Error happened while downloading model files: {:?}", err);
+            anyhow::bail!("{:?}", err);
         }
 
         let map = MODEL_INFO_MAP.read().unwrap();
