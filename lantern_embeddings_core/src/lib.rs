@@ -406,16 +406,11 @@ pub mod clip {
         Ok(())
     }
 
-    fn check_available_gpu_memory(
-        model_size: f64,
-        mem_threshold: f64,
-    ) -> Result<bool, anyhow::Error> {
+    fn check_available_gpu_memory(mem_threshold: f64) -> Result<bool, anyhow::Error> {
         let mut _nvml_instance = None;
         let mut gpu_device = None;
 
-        println!("Calling nvml init");
         if let Ok(nvml) = Nvml::init() {
-            println!("nvml init");
             _nvml_instance = Some(nvml);
             let _nvml_insteance = _nvml_instance.as_mut().unwrap();
             let nvml_device = _nvml_insteance.device_by_index(0);
@@ -425,15 +420,19 @@ pub mod clip {
         }
 
         if gpu_device.is_none() {
-            println!("no gpu device ");
             return Ok(true);
         }
 
         let gpu_device = gpu_device.as_ref().unwrap();
 
         let mem_info = gpu_device.memory_info()?;
-        let percent_of_free_mem = (model_size / mem_info.free as f64) * 100.0;
-        println!("percent_of_free_mem GPU RAM {percent_of_free_mem}");
+        // Sometimes models consume much more memory based on input size.
+        // In my experiments the 200mb model was consuming 3GB memory.
+        // So comparing model size with free GPU memory will not be correct here.
+        // Instead we will check if the used memory in GPU is more than the threshold
+        // For GPU we will just clear the cache but not throw an error
+        // As the error from ORT is handled and will not cause an OOM like RAM
+        let percent_of_free_mem = (mem_info.used as f64 / mem_info.total as f64) * 100.0;
 
         if percent_of_free_mem >= mem_threshold {
             return Ok(false);
@@ -444,6 +443,7 @@ pub mod clip {
     fn check_available_memory(
         model_path: &PathBuf,
         model_map: &mut HashMap<&'static str, ModelInfo>,
+        cache: bool,
     ) -> Result<(), anyhow::Error> {
         let mut sys = System::new_all();
         // First we update all information of our `System` struct.
@@ -455,12 +455,10 @@ pub mod clip {
         let metadata = model_file.metadata()?;
         let model_size = metadata.len() as f64;
 
-        println!("Model size {model_size}, total free meme {total_free_mem}");
         let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
-        let mem_threshold: f64 = 2.0;
+        let mem_threshold: f64 = 80.0;
 
         let mut cache_cleared = false;
-        println!("percent_of_free_mem RAM before check {percent_of_free_mem}");
         if percent_of_free_mem >= mem_threshold {
             // If not enough RAM try to clear model cache
             // and check again
@@ -470,23 +468,21 @@ pub mod clip {
             let total_free_mem = sys.free_memory() + sys.free_swap();
             let total_free_mem = total_free_mem as f64;
             let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
-            println!("percent_of_free_mem RAM after check {percent_of_free_mem}");
 
             if percent_of_free_mem >= mem_threshold {
                 anyhow::bail!("Not enough free memory to run the model");
             }
         }
 
-        if !check_available_gpu_memory(model_size, mem_threshold)? {
+        if cache && !check_available_gpu_memory(mem_threshold)? {
+            // The GPU memory will only be checked when the models are cached
             // If not enough GPU RAM and cache is not clearted already
-            // try to clear model cache and check again
+            // try to clear model cache
+            // We will not check again and instead let ort fail if not enough memory
+            // the ort error will not kill the process as it is result
             if !cache_cleared {
                 clear_model_cache(model_map)?;
-                if check_available_gpu_memory(model_size, mem_threshold)? {
-                    return Ok(());
-                }
             }
-            anyhow::bail!("Not enough free memory in GPU to run the model");
         }
         Ok(())
     }
@@ -495,6 +491,7 @@ pub mod clip {
         model_name: &str,
         logger: &LoggerFn,
         data_path: &str,
+        cache: bool,
     ) -> Result<(), anyhow::Error> {
         {
             let map = MODEL_INFO_MAP.read().unwrap();
@@ -533,7 +530,7 @@ pub mod clip {
         }
 
         // Check available memory
-        check_available_memory(&model_path, &mut map_write)?;
+        check_available_memory(&model_path, &mut map_write, cache)?;
 
         let model_info = map_write.get_mut(model_name).unwrap();
         let encoder = EncoderService::new(
@@ -626,7 +623,7 @@ pub mod clip {
         let logger = logger.unwrap_or(&(default_logger as LoggerFn));
 
         let download_result =
-            check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH));
+            check_and_download_files(model_name, logger, data_path.unwrap_or(DATA_PATH), cache);
 
         if let Err(err) = download_result {
             anyhow::bail!("Error happened while downloading model files: {:?}", err);
