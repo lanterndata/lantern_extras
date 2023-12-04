@@ -441,15 +441,15 @@ pub mod clip {
     }
 
     fn check_available_memory(
+        logger: &LoggerFn,
         model_path: &PathBuf,
         model_map: &mut HashMap<&'static str, ModelInfo>,
         cache: bool,
     ) -> Result<(), anyhow::Error> {
         let mut sys = System::new_all();
-        // First we update all information of our `System` struct.
         sys.refresh_all();
-
-        let total_free_mem = sys.free_memory() + sys.free_swap();
+        let total_free_mem =
+            (sys.total_memory() - sys.used_memory()) + (sys.total_swap() - sys.used_swap());
         let total_free_mem = total_free_mem as f64;
         let model_file = std::fs::File::open(model_path)?;
         let metadata = model_file.metadata()?;
@@ -462,10 +462,12 @@ pub mod clip {
         if percent_of_free_mem >= mem_threshold {
             // If not enough RAM try to clear model cache
             // and check again
+            logger("System memory limit exceeded, trying to clear cache");
             clear_model_cache(model_map)?;
             cache_cleared = true;
             sys.refresh_all();
-            let total_free_mem = sys.free_memory() + sys.free_swap();
+            let total_free_mem =
+                (sys.total_memory() - sys.used_memory()) + (sys.total_swap() - sys.used_swap());
             let total_free_mem = total_free_mem as f64;
             let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
 
@@ -481,9 +483,11 @@ pub mod clip {
             // We will not check again and instead let ort fail if not enough memory
             // the ort error will not kill the process as it is result
             if !cache_cleared {
+                logger("GPU memory limit exceeded, trying to clear cache");
                 clear_model_cache(model_map)?;
             }
         }
+
         Ok(())
     }
 
@@ -530,7 +534,7 @@ pub mod clip {
         }
 
         // Check available memory
-        check_available_memory(&model_path, &mut map_write, cache)?;
+        check_available_memory(logger, &model_path, &mut map_write, cache)?;
 
         let model_info = map_write.get_mut(model_name).unwrap();
         let encoder = EncoderService::new(
