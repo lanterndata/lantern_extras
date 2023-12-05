@@ -134,6 +134,8 @@ lazy_static! {
         .into_arc();
 }
 
+static MEM_PERCENT_THRESHOLD: f64 = 80.0;
+
 fn default_logger(text: &str) {
     println!("{}", text);
 }
@@ -406,7 +408,7 @@ pub mod clip {
         Ok(())
     }
 
-    fn check_available_gpu_memory(mem_threshold: f64) -> Result<bool, anyhow::Error> {
+    fn percent_gpu_memory_used() -> Result<f64, anyhow::Error> {
         let mut _nvml_instance = None;
         let mut gpu_device = None;
 
@@ -420,7 +422,7 @@ pub mod clip {
         }
 
         if gpu_device.is_none() {
-            return Ok(true);
+            return Ok(0);
         }
 
         let gpu_device = gpu_device.as_ref().unwrap();
@@ -432,12 +434,7 @@ pub mod clip {
         // Instead we will check if the used memory in GPU is more than the threshold
         // For GPU we will just clear the cache but not throw an error
         // As the error from ORT is handled and will not cause an OOM like RAM
-        let percent_of_free_mem = (mem_info.used as f64 / mem_info.total as f64) * 100.0;
-
-        if percent_of_free_mem >= mem_threshold {
-            return Ok(false);
-        }
-        return Ok(true);
+        Ok((mem_info.used as f64 / mem_info.total as f64) * 100.0)
     }
 
     fn check_available_memory(
@@ -456,10 +453,9 @@ pub mod clip {
         let model_size = metadata.len() as f64;
 
         let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
-        let mem_threshold: f64 = 80.0;
 
         let mut cache_cleared = false;
-        if percent_of_free_mem >= mem_threshold {
+        if percent_of_free_mem >= MEM_PERCENT_THRESHOLD {
             // If not enough RAM try to clear model cache
             // and check again
             logger("System memory limit exceeded, trying to clear cache");
@@ -471,11 +467,11 @@ pub mod clip {
             let total_free_mem = total_free_mem as f64;
             let percent_of_free_mem = (model_size / total_free_mem) * 100.0;
 
-            if percent_of_free_mem >= mem_threshold {
+            if percent_of_free_mem >= MEM_PERCENT_THRESHOLD {
                 let mem_avail_in_mb = total_free_mem / 1024.0 / 1024.0;
 
                 // We need available_memory + percent_diff % to run the model
-                let percent_diff = percent_of_free_mem - mem_threshold;
+                let percent_diff = percent_of_free_mem - MEM_PERCENT_THRESHOLD;
                 let mem_needed_in_mb = mem_avail_in_mb + mem_avail_in_mb / (100.0 / percent_diff);
                 anyhow::bail!(
                     "Not enough free memory to run the model. Memory needed: {:.2}MB, Memory available: {:.2}MB",
@@ -485,7 +481,7 @@ pub mod clip {
             }
         }
 
-        if cache && !check_available_gpu_memory(mem_threshold)? {
+        if cache && percent_gpu_memory_used()? >= MEM_PERCENT_THRESHOLD {
             // The GPU memory will only be checked when the models are cached
             // If not enough GPU RAM and cache is not clearted already
             // try to clear model cache
