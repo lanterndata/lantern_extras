@@ -422,7 +422,7 @@ pub mod clip {
         }
 
         if gpu_device.is_none() {
-            return Ok(0);
+            return Ok(0.0);
         }
 
         let gpu_device = gpu_device.as_ref().unwrap();
