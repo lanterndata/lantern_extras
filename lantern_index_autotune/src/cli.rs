@@ -26,7 +26,7 @@ pub struct IndexAutotuneArgs {
 
     /// Target recall
     #[arg(long, default_value_t = 98)]
-    pub recall: u64,
+    pub recall: usize,
 
     /// K limit of elements for query
     #[arg(long, default_value_t = 10)]

@@ -11,6 +11,7 @@ pub mod cli;
 
 type AnyhowVoidResult = Result<(), anyhow::Error>;
 type GroundTruth = Vec<(Vec<f32>, Vec<String>)>;
+pub type ProgressCbFn = Box<dyn Fn(u8) + Send + Sync>;
 
 static INTERNAL_SCHEMA_NAME: &'static str = "_lantern_internal";
 static CONNECTION_PARAMS: &'static str = "connect_timeout=10";
@@ -286,12 +287,25 @@ fn print_results(logger: &Logger, results: &Vec<AutotuneResult>) {
     }
 }
 
-pub fn autotune_index(args: &cli::IndexAutotuneArgs, logger: Option<Logger>) -> AnyhowVoidResult {
+fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress: u8) {
+    logger.debug(&format!("Progress {progress}%"));
+    if progress_cb.is_some() {
+        let cb = progress_cb.as_ref().unwrap();
+        cb(progress);
+    }
+}
+
+pub fn autotune_index(
+    args: &cli::IndexAutotuneArgs,
+    progress_cb: Option<ProgressCbFn>,
+    logger: Option<Logger>,
+) -> AnyhowVoidResult {
     let logger = logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug));
 
     let uri = append_params_to_uri(&args.uri, CONNECTION_PARAMS);
     let mut client = Client::connect(&uri, NoTls)?;
 
+    let mut progress: u8 = 0;
     let src_table_name = get_full_table_name(&args.schema, &args.table);
     let tmp_table_name = format!("_test_{}", &args.table);
     let tmp_table_full_name = get_full_table_name(INTERNAL_SCHEMA_NAME, &tmp_table_name);
@@ -395,6 +409,11 @@ pub fn autotune_index(args: &cli::IndexAutotuneArgs, logger: Option<Logger>) -> 
         }
     }
 
+    progress += 5;
+    report_progress(&progress_cb, &logger, progress);
+
+    // 30% from progress is reserved for result export and index creation
+    let progress_per_iter = (100 - progress - 30) / index_variants.len() as u8;
     if autotune_results.len() == 0 {
         // If no existing results were found, we will iterate over the variations and do the following:
         // 1. DROP previous iteration index if exists (if not the first iteration)
@@ -451,12 +470,16 @@ pub fn autotune_index(args: &cli::IndexAutotuneArgs, logger: Option<Logger>) -> 
                 indexing_duration: indexing_duration as i32,
                 model_name: args.model_name.clone(),
             });
+            progress += progress_per_iter;
+            report_progress(&progress_cb, &logger, progress);
 
             if recall >= 99.9 {
                 break;
             }
         }
     }
+
+    report_progress(&progress_cb, &logger, 70);
 
     // Print autotune results
     print_results(&logger, &autotune_results);
@@ -488,6 +511,7 @@ pub fn autotune_index(args: &cli::IndexAutotuneArgs, logger: Option<Logger>) -> 
     // We will find the best variant for target recall
     // And create index with that variant
     if args.create_index {
+        report_progress(&progress_cb, &logger, 80);
         let best_result = find_best_variant(&autotune_results, args.recall as f64);
         logger.debug(&format!(
             "Creating index with the best result for job {job_id}"
@@ -515,5 +539,6 @@ pub fn autotune_index(args: &cli::IndexAutotuneArgs, logger: Option<Logger>) -> 
         logger.debug(&format!("Index for job {job_id} created in {duration}s"));
     }
 
+    report_progress(&progress_cb, &logger, 100);
     Ok(())
 }
