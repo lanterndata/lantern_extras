@@ -13,7 +13,7 @@ type AnyhowVoidResult = Result<(), anyhow::Error>;
 type GroundTruth = Vec<(Vec<f32>, Vec<String>)>;
 pub type ProgressCbFn = Box<dyn Fn(u8) + Send + Sync>;
 
-static INTERNAL_SCHEMA_NAME: &'static str = "_lantern_internal";
+static INTERNAL_SCHEMA_NAME: &'static str = "lantern";
 static CONNECTION_PARAMS: &'static str = "connect_timeout=10";
 
 #[derive(Debug)]
@@ -243,8 +243,8 @@ fn calculate_recall_and_latency(
     ground_truth: &GroundTruth,
     test_table_name: &str,
     k: u16,
-) -> Result<(f32, usize), anyhow::Error> {
-    let mut recall: f32 = 0.0;
+) -> Result<(f64, usize), anyhow::Error> {
+    let mut recall: f64 = 0.0;
     let mut latency: usize = 0;
 
     for (query, neighbors) in ground_truth {
@@ -262,12 +262,14 @@ fn calculate_recall_and_latency(
             .collect();
         let intersection = truth.intersection(&result).collect::<Vec<_>>();
 
-        let query_recall = (intersection.len() as f32 / truth.len() as f32) * 100.0;
+        let query_recall = (intersection.len() as f64 / truth.len() as f64) * 100.0;
         recall += query_recall;
     }
 
-    recall = recall / ground_truth.len() as f32;
+    recall = recall / ground_truth.len() as f64;
     latency = latency / ground_truth.len();
+    recall = f64::trunc(recall * 100.0) / 100.0; // rount to 2 decimal points
+
     Ok((recall, latency))
 }
 
@@ -465,7 +467,7 @@ pub fn autotune_index(
                 k: args.k as i32,
                 dim: column_dims as i32,
                 sample_size: args.test_data_size as i32,
-                recall: recall as f64,
+                recall,
                 latency: latency as i32,
                 indexing_duration: indexing_duration as i32,
                 model_name: args.model_name.clone(),
