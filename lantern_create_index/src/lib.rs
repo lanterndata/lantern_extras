@@ -225,6 +225,10 @@ pub fn create_usearch_index(
             &get_full_table_name(&args.schema, &args.table),
             &quote_ident(&args.column),
             args.index_name.as_deref(),
+            args.ef,
+            args.efc,
+            args.dims,
+            args.m,
         )?;
         LargeObject::remove_from_remote_fs(&mut client, oid.unwrap(), &index_path)?;
         logger.info(&format!(
