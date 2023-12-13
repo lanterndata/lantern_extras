@@ -65,11 +65,14 @@ impl<'a> LargeObject<'a> {
         path: &str,
     ) -> crate::AnyhowVoidResult {
         let mut transaction = client.transaction()?;
-        let fd = transaction.query_one("SELECT pg_catalog.lo_open($1, 131072)", &[&oid])?;
-        let fd: i32 = fd.get(0);
-        transaction.execute("SELECT pg_catalog.lo_truncate($1, 0)", &[&fd])?;
-        transaction.execute("SELECT pg_catalog.lo_export($1, $2)", &[&oid, &path])?;
         transaction.execute("SELECT pg_catalog.lo_unlink($1)", &[&oid])?;
+        transaction.execute("DROP TABLE IF EXISTS _rm_lantern_index_output", &[])?;
+        transaction.execute("CREATE TABLE _rm_lantern_index_output(out TEXT)", &[])?;
+        transaction.execute(
+            &format!("COPY _rm_lantern_index_output FROM PROGRAM 'rm -rf {path}'"),
+            &[],
+        )?;
+        transaction.execute("DROP TABLE _rm_lantern_index_output", &[])?;
         transaction.commit()?;
         Ok(())
     }
