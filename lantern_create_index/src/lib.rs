@@ -102,35 +102,48 @@ pub fn create_usearch_index(
     client: Option<Client>,
 ) -> Result<(), anyhow::Error> {
     let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug)));
-    logger.info(&format!(
-        "Creating index with parameters dimensions={} m={} ef={} ef_construction={}",
-        args.dims, args.m, args.ef, args.efc
-    ));
-
-    let options = IndexOptions {
-        dimensions: args.dims,
-        metric: args.metric_kind.value(),
-        quantization: ScalarKind::F32,
-        connectivity: args.m,
-        expansion_add: args.efc,
-        expansion_search: args.ef,
-    };
-
     let num_cores: usize = std::thread::available_parallelism().unwrap().into();
     logger.info(&format!("Number of available CPU cores: {}", num_cores));
 
-    let index = new_index(&options)?;
     // get all row count
     let mut client = client.unwrap_or(Client::connect(&args.uri, NoTls)?);
     let mut transaction = client.transaction()?;
     let full_table_name = get_full_table_name(&args.schema, &args.table);
 
     transaction.execute(
-        &format!("LOCK TABLE ONLY {full_table_name} IN ACCESS EXCLUSIVE MODE"),
+        &format!("LOCK TABLE ONLY {full_table_name} IN ACCESS EXCLUSIVE MODE NOWAIT"),
         &[],
     )?;
 
     let rows = transaction.query(&format!("SELECT COUNT(*) FROM {full_table_name};",), &[])?;
+
+    let row = transaction.query_one(&format!("SELECT ARRAY_LENGTH({col}, 1) as dim FROM {full_table_name} WHERE {col} IS NOT NULL LIMIT 1",col=quote_ident(&args.column)), &[])?;
+
+    let infered_dimensions = row.try_get::<usize, i32>(0)? as usize;
+
+    if args.dims != 0 && infered_dimensions != args.dims {
+        // I didn't complitely remove the dimensions from args
+        // To have extra validation when reindexing external index
+        // This is invariant and should never be a case
+        anyhow::bail!("Infered dimensions ({infered_dimensions}) does not match with the provided dimensions ({dims})", dims=args.dims);
+    }
+
+    let dimensions = infered_dimensions;
+
+    logger.info(&format!(
+        "Creating index with parameters dimensions={} m={} ef={} ef_construction={}",
+        dimensions, args.m, args.ef, args.efc
+    ));
+
+    let options = IndexOptions {
+        dimensions,
+        metric: args.metric_kind.value(),
+        quantization: ScalarKind::F32,
+        connectivity: args.m,
+        expansion_add: args.efc,
+        expansion_search: args.ef,
+    };
+    let index = new_index(&options)?;
 
     let count: i64 = rows[0].get(0);
     // reserve enough memory on index
@@ -226,7 +239,7 @@ pub fn create_usearch_index(
             args.index_name.as_deref(),
             args.ef,
             args.efc,
-            args.dims,
+            dimensions,
             args.m,
         )?;
         logger.info(&format!(

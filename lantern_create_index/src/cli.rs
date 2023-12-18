@@ -113,7 +113,7 @@ pub struct CreateIndexArgs {
     pub ef: usize,
 
     /// Dimensions of vector
-    #[arg(short)]
+    #[arg(short, default_value_t = 0)]
     pub dims: usize,
 
     /// Distance algorithm

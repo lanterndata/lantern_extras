@@ -14,6 +14,12 @@ fn notice_fn(text: &str) {
     notice!("{}", text);
 }
 
+fn validate_index_param(param_name: &str, param_val: i32, min: i32, max: i32) {
+    if param_val < min || param_val > max {
+        error!("{param_name} should be in range [{min}, {max}]");
+    }
+}
+
 #[pg_extern(immutable, parallel_unsafe)]
 fn lantern_create_external_index<'a>(
     column: &'a str,
@@ -26,6 +32,15 @@ fn lantern_create_external_index<'a>(
     ef: default!(i32, 16),
     index_name: default!(&'a str, "''"),
 ) -> Result<(), anyhow::Error> {
+    validate_index_param("ef", ef, 1, 400);
+    validate_index_param("ef_construction", ef_construction, 1, 400);
+    validate_index_param("ef_construction", ef_construction, 1, 400);
+    validate_index_param("m", m, 2, 128);
+
+    if dim != 0 {
+        validate_index_param("dim", dim, 1, 2000);
+    }
+
     let (db, user, socket_path, port) = Spi::connect(|client| {
         let row = client
             .select(
@@ -43,6 +58,7 @@ fn lantern_create_external_index<'a>(
         let user = row.get_by_name::<String, &str>("user")?.unwrap();
         let socket_path = row.get_by_name::<String, &str>("socket_path")?.unwrap();
         let port = row.get_by_name::<String, &str>("port")?.unwrap();
+
         Ok::<(String, String, String, String), anyhow::Error>((db, user, socket_path, port))
     })?;
 
