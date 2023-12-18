@@ -123,14 +123,14 @@ pub fn create_usearch_index(
     // get all row count
     let mut client = client.unwrap_or(Client::connect(&args.uri, NoTls)?);
     let mut transaction = client.transaction()?;
+    let full_table_name = get_full_table_name(&args.schema, &args.table);
 
-    let rows = transaction.query(
-        &format!(
-            "SELECT COUNT(*) FROM {};",
-            get_full_table_name(&args.schema, &args.table)
-        ),
+    transaction.execute(
+        &format!("LOCK TABLE ONLY {full_table_name} IN ACCESS EXCLUSIVE MODE"),
         &[],
     )?;
+
+    let rows = transaction.query(&format!("SELECT COUNT(*) FROM {full_table_name};",), &[])?;
 
     let count: i64 = rows[0].get(0);
     // reserve enough memory on index
@@ -211,13 +211,12 @@ pub fn create_usearch_index(
     logger.info(&format!("Index saved under {}", &args.out));
 
     if args.import {
-        transaction.commit()?;
+        // Close portal, so we will be able to create index
+        transaction.execute("CLOSE ALL", &[])?;
         let mut rng = rand::thread_rng();
         let index_path = format!("/tmp/index-{}.usearch", rng.gen_range(0..1000));
-        let transaction = client.transaction()?;
         let mut large_object = LargeObject::new(transaction, &index_path);
         large_object.create()?;
-        let oid = large_object.oid.clone();
         let mut reader = fs::File::open(Path::new(&args.out))?;
         io::copy(&mut reader, &mut large_object)?;
         fs::remove_file(Path::new(&args.out))?;
@@ -230,7 +229,6 @@ pub fn create_usearch_index(
             args.dims,
             args.m,
         )?;
-        LargeObject::remove_from_remote_fs(&mut client, oid.unwrap(), &index_path)?;
         logger.info(&format!(
             "Index imported to table {} and removed from filesystem",
             &args.table
