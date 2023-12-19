@@ -50,6 +50,8 @@ const EMB_LOCK_TABLE_NAME: &'static str = "_lantern_emb_job_locks";
 
 lazy_static! {
     static ref JOBS: RwLock<HashMap<i32, EmbeddingJobTaskCancelTx>> = RwLock::new(HashMap::new());
+    static ref JOB_BATCHING_HASHMAP: Arc<Mutex<HashMap<i32, Vec<String>>>> =
+        Arc::new(Mutex::new(HashMap::new()));
 }
 
 async fn set_job_handle(job_id: i32, handle: EmbeddingJobTaskCancelTx) -> AnyhowVoidResult {
@@ -270,9 +272,6 @@ async fn job_insert_processor(
     // batch jobs for the rows. This will optimize embedding generation as if there will be lots of
     // inserts to the table between 10 seconds all that rows will be batched.
 
-    let job_batching_hashmap: Arc<Mutex<HashMap<i32, Vec<String>>>> =
-        Arc::new(Mutex::new(HashMap::new()));
-
     let full_table_name = Arc::new(get_full_table_name(&schema, &table));
     let job_query_sql = Arc::new(format!("SELECT id, db_connection as db_uri, src_column as \"column\", dst_column, \"table\", \"schema\", embedding_model as model FROM {0}", &full_table_name));
 
@@ -282,7 +281,7 @@ async fn job_insert_processor(
     let job_tx_r1 = job_tx.clone();
     let logger_r1 = logger.clone();
     let lock_table_name = Arc::new(get_full_table_name(&lock_table_schema, EMB_LOCK_TABLE_NAME));
-    let job_batching_hashmap_r1 = job_batching_hashmap.clone();
+    let job_batching_hashmap_r1 = JOB_BATCHING_HASHMAP.clone();
 
     let insert_processor_task = tokio::spawn(async move {
         while let Some(notification) = notifications_rx.recv().await {
@@ -365,6 +364,7 @@ async fn job_insert_processor(
         Ok(()) as AnyhowVoidResult
     });
 
+    let job_batching_hashmap = JOB_BATCHING_HASHMAP.clone();
     let batch_collector_task = tokio::spawn(async move {
         loop {
             let mut job_map = job_batching_hashmap.lock().await;
@@ -438,6 +438,11 @@ async fn job_update_processor(
                    tx.send(true).await?;
                 }
                 drop(jobs);
+
+                // Cancel collected jobs
+                let mut job_map = JOB_BATCHING_HASHMAP.lock().await;
+                job_map.remove(&id);
+                drop(job_map);
             }
 
             if canceled_at.is_none() && notification.generate_missing {
