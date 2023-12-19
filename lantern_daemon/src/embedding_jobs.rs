@@ -24,28 +24,60 @@ use crate::cli;
 use crate::client_embedding_jobs::toggle_client_job;
 use crate::helpers::{db_notification_listener, startup_hook};
 use crate::types::{
-    AnyhowVoidResult, EmbeddingJob, JobInsertNotification, JobUpdateNotification, VoidFuture,
+    AnyhowVoidResult, EmbeddingJob, JobInsertNotification, JobUpdateNotification, VoidFuture, EmbeddingJobTaskHandle,
 };
 use futures::future;
 use itertools::Itertools;
 use lantern_embeddings::cli::EmbeddingArgs;
 use lantern_logger::Logger;
 use lantern_utils::{get_full_table_name, quote_ident};
+use tokio::runtime::Handle;
+use tokio::task::JoinHandle;
+use std::borrow::BorrowMut;
 use std::collections::HashMap;
+use std::ops::Deref;
 use std::path::Path;
 use std::process;
 use std::sync::Arc;
 use std::time::Duration;
 use std::time::SystemTime;
 use tokio::fs;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, oneshot};
 use tokio::sync::{
     mpsc,
     mpsc::{Receiver, Sender},
+    RwLock
 };
 use tokio_postgres::{Client, NoTls};
 
 const EMB_LOCK_TABLE_NAME: &'static str = "_lantern_emb_job_locks";
+
+lazy_static! {
+    static ref JOBS: RwLock<HashMap<i32, EmbeddingJobTaskHandle>> = RwLock::new(HashMap::new());
+}
+
+async fn set_job_handle(job_id: i32, handle: EmbeddingJobTaskHandle) -> AnyhowVoidResult {
+    let mut jobs = JOBS.write().await;
+    jobs.insert(job_id, handle);
+    Ok(())
+}
+
+async fn get_job_handle(job_id: i32) -> Result<Option<EmbeddingJobTaskHandle>, anyhow::Error> {
+    let jobs = JOBS.read().await;
+    let job = jobs.get(&job_id);
+
+    if let Some(handler) = job {
+        Ok::<Option<EmbeddingJobTaskHandle>, anyhow::Error>(Some(handler.clone()));
+    }
+
+    Ok(None)
+}
+
+async fn remove_job_handle(job_id: i32) -> AnyhowVoidResult {
+    let mut jobs = JOBS.write().await;
+    jobs.remove(&job_id);
+    Ok(())
+}
 
 async fn lock_row(
     client: Arc<Client>,
@@ -115,48 +147,89 @@ async fn embedding_worker(
             };
 
             let task_logger = Logger::new(&format!("Embedding Job {}", job.id), logger.level.clone());
-            let result = lantern_embeddings::create_embeddings_from_db(EmbeddingArgs {
-                pk: String::from("id"),
-                model: job.model.clone(),
-                schema: job.schema.clone(),
-                uri: job.db_uri.clone(),
-                out_uri: Some(job.db_uri.clone()),
-                table: job.table.clone(),
-                out_table: Some(job.table.clone()),
-                column: job.column.clone(),
-                out_column: job.out_column.clone(),
-                batch_size: job.batch_size,
-                data_path: Some(data_path),
-                visual: false,
-                stream: true,
-                create_column: false,
-                out_csv: None,
-                filter: job.filter.clone(),
-                limit: None
-            }, progress_callback.is_some(), progress_callback, Some(task_logger));
+            // Spawn cancellation listener
+            // Keep cancel listener in hashmap with job id
+            // Spawn task
+            // If cancel request comes
+            // Abort task
+            // Remove cancel listenre from hashmap
+            let job_clone = job.clone();
+            
+            let (job_rx, job_tx) = oneshot::channel();
+            let (cancel_rx, cancel_tx) = oneshot::channel();
 
+            let task_handle = tokio::spawn(async move {
+                // spawn 2 tasks here
+                let embedding_task = tokio::spawn(async move {
+                    let result = lantern_embeddings::create_embeddings_from_db(EmbeddingArgs {
+                            pk: String::from("id"),
+                            model: job_clone.model.clone(),
+                            schema: job_clone.schema.clone(),
+                            uri: job_clone.db_uri.clone(),
+                            out_uri: Some(job_clone.db_uri.clone()),
+                            table: job_clone.table.clone(),
+                            out_table: Some(job_clone.table.clone()),
+                            column: job_clone.column.clone(),
+                            out_column: job_clone.out_column.clone(),
+                            batch_size: job_clone.batch_size,
+                            data_path: Some(data_path),
+                            visual: false,
+                            stream: true,
+                            create_column: false,
+                            out_csv: None,
+                            filter: job_clone.filter.clone(),
+                            limit: None
+                        }, progress_callback.is_some(), progress_callback, Some(task_logger));
+                    job_tx.send(result);
+                });
 
-            match result {
-                Ok(processed_cnt) => {
-                    if job.is_init {
-                        // mark success
-                        client_ref.execute(&format!("UPDATE {jobs_table_name} SET init_finished_at=NOW(), updated_at=NOW() WHERE id=$1"), &[&job.id]).await?;
-                        toggle_client_job(job.id.clone(), job.db_uri.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), true ).await?;
+                let cancellation_task = tokio::spawn(async move {
+                    while let Some(_) = rx.recv().await {
+                        embedding_task.abort();
+                        job_tx.send(Err("Job Canceled")).await;
+                        break;
                     }
+                    Ok(())
+                });
+                // the first one will listen for 2 notifications (Finished, Canceled)
+                // the second one will call create_embeddings_from_db and as finished send results
+                // via channel to first task
+                // if the first task will receive finished it will return the received result
+                // if it will receive Canceled it should abort the embedding generation task and
+                // return error
+                tokio::select! {
+                  embedding_task,
+                  cancellation_task,
+                }
+            });
 
-                    if processed_cnt > 0 {
-                        let fn_name = get_full_table_name(&schema_ref, "increment_embedding_usage");
-                        let res = client_ref.execute(&format!("SELECT {fn_name}({job_id},{usage})", job_id=job.id, usage=processed_cnt), &[]).await;
+            set_job_handle(job.id, cancel_tx.clone()).await?;
+      
+            while let Some(result) = job_rx.recv().await {
+                remove_job_handle(job.id).await?;
 
-                        if let Err(e) = res {
-                            logger.error(&format!("Error while updating usage for {job_id}: {e}", job_id=job.id));
+                match result {
+                    Ok(processed_cnt) => {
+                        if job.is_init {
+                            // mark success
+                            client_ref.execute(&format!("UPDATE {jobs_table_name} SET init_finished_at=NOW(), updated_at=NOW() WHERE id=$1"), &[&job.id]).await?;
+                            toggle_client_job(job.id.clone(), job.db_uri.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), true ).await?;
                         }
-                    }
-                },
-                Err(e) => {
-                    if job.is_init {
-                        // update failure reason
-                        client_ref.execute(&format!("UPDATE {jobs_table_name} SET init_failed_at=NOW(), updated_at=NOW(), init_failure_reason=$1 WHERE id=$2"), &[&e.to_string(), &job.id]).await?;
+
+                        if processed_cnt > 0 {
+                            let fn_name = get_full_table_name(&schema_ref, "increment_embedding_usage");
+                            let res = client_ref.execute(&format!("SELECT {fn_name}({job_id},{usage})", job_id=job.id, usage=processed_cnt), &[]).await;
+
+                            if let Err(e) = res {
+                                logger.error(&format!("Error while updating usage for {job_id}: {e}", job_id=job.id));
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        if job.is_init {
+                            // update failure reason
+                            client_ref.execute(&format!("UPDATE {jobs_table_name} SET init_failed_at=NOW(), updated_at=NOW(), init_failure_reason=$1 WHERE id=$2"), &[&e.to_string(), &job.id]).await?;
+                        }
                     }
                 }
             }
@@ -378,6 +451,11 @@ async fn job_update_processor(
 
             if init_finished_at.is_some() {
               toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
+            } else if canceled_at.is_some() {
+                // Cancel ongoing job
+                if let Some(handle) = get_job_handle(id).await? {
+                    handle.abort();
+                }
             }
 
             if canceled_at.is_none() && notification.generate_missing {
