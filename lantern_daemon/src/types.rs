@@ -1,6 +1,6 @@
 use futures::Future;
-use std::{pin::Pin, sync::Arc};
-use tokio::{runtime::Handle, task::JoinHandle};
+use std::pin::Pin;
+use tokio::sync::mpsc::Sender;
 use tokio_postgres::Row;
 
 #[derive(Debug)]
@@ -94,6 +94,5 @@ pub struct JobUpdateNotification {
 }
 
 pub type AnyhowVoidResult = Result<(), anyhow::Error>;
-pub type AnyhowU64Result = Result<usize, anyhow::Error>;
-pub type EmbeddingJobTaskHandle = Arc<JoinHandle<AnyhowU64Result>>;
+pub type EmbeddingJobTaskCancelTx = Sender<bool>;
 pub type VoidFuture = Pin<Box<dyn Future<Output = AnyhowVoidResult>>>;
