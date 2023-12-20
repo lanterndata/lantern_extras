@@ -227,6 +227,7 @@ pub fn create_usearch_index(
     index_arc.save(&args.out)?;
     logger.info(&format!("Index saved under {}", &args.out));
 
+    drop(index_arc);
     if args.import {
         // Close portal, so we will be able to create index
         transaction.execute("CLOSE ALL", &[])?;
@@ -237,6 +238,7 @@ pub fn create_usearch_index(
         let mut reader = fs::File::open(Path::new(&args.out))?;
         io::copy(&mut reader, &mut large_object)?;
         fs::remove_file(Path::new(&args.out))?;
+        drop(reader);
         large_object.finish(
             &get_full_table_name(&args.schema, &args.table),
             &quote_ident(&args.column),
