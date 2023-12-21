@@ -13,7 +13,7 @@ type AnyhowVoidResult = Result<(), anyhow::Error>;
 type GroundTruth = Vec<(Vec<f32>, Vec<String>)>;
 pub type ProgressCbFn = Box<dyn Fn(u8) + Send + Sync>;
 
-static INTERNAL_SCHEMA_NAME: &'static str = "lantern";
+static INTERNAL_SCHEMA_NAME: &'static str = "lantern_cli";
 static CONNECTION_PARAMS: &'static str = "connect_timeout=10";
 
 #[derive(Debug)]
