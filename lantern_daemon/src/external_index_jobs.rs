@@ -28,7 +28,7 @@ use crate::helpers::{db_notification_listener, startup_hook, collect_pending_ind
 use crate::types::{AnyhowVoidResult, ExternalIndexJob, JobInsertNotification, VoidFuture, JobUpdateNotification, JobTaskCancelTx, JobCancellationHandlersMap};
 use futures::future;
 use lantern_external_index::cli::CreateIndexArgs;
-use lantern_logger::Logger;
+use lantern_logger::{Logger, LogLevel};
 use lantern_utils::get_full_table_name;
 use tokio::sync::RwLock;
 use std::collections::HashMap;
@@ -100,25 +100,25 @@ async fn external_index_worker(
                 Some(Box::new(progress_callback) as lantern_external_index::ProgressCbFn);
 
             let task_logger =
-                Logger::new(&format!("Autotune Job {}", job.id), logger.level.clone());
+                Logger::new(&format!("External Index Job {}", job.id), LogLevel::Info);
             let job_clone = job.clone();
             
             let (cancel_tx, mut cancel_rx) = mpsc::channel(1);
             let cancel_tx_clone = cancel_tx.clone();
 
             // We will spawn 2 tasks
-            // The first one will run embedding generation job and as soon as it finish
+            // The first one will run index creation job and as soon as it finish
             // It will send the result via job_tx channel
             // The second task will listen to cancel_rx channel, so if someone send a message
             // via cancel_tx channel it will change is_canceled to true
-            // And embedding job will be cancelled on next cycle
+            // And index job will be cancelled on next cycle
             // We will keep the cancel_tx in static hashmap, so we can cancel the job if
             // canceled_at will be changed to true
 
             let task_handle = tokio::spawn(async move {
                 let is_canceled = Arc::new(std::sync::RwLock::new(false));
                 let is_canceled_clone = is_canceled.clone();
-                let task = tokio::spawn(async move {
+                let task = tokio::task::spawn_blocking(move || {
                     let val: u32  = rand::random();
                     let index_path = format!("/tmp/daemon-index-{val}.usearch");
                     let result = lantern_external_index::create_usearch_index(&CreateIndexArgs {
@@ -134,9 +134,8 @@ async fn external_index_worker(
                         import: true,
                         dims: 0,
                         out: index_path
-                        
                     }, progress_callback, Some(is_canceled_clone), Some(task_logger));
-                    cancel_tx_clone.send(false).await?;
+                    futures::executor::block_on(cancel_tx_clone.send(false))?;
                     result
                 });
 
@@ -181,8 +180,8 @@ async fn job_insert_processor(
     logger: Arc<Logger>,
 ) -> AnyhowVoidResult {
     // This function will handle newcoming jobs
-    // It will update started_at create autotune job from the row
-    // And pass to autotune_worker
+    // It will update started_at create external index job from the row
+    // And pass to external_index_worker
     // On startup this function will also be called for unfinished jobs
 
     tokio::spawn(async move {
@@ -231,7 +230,7 @@ pub async fn start(args: cli::DaemonArgs, logger: Arc<Logger>) -> AnyhowVoidResu
     tokio::spawn(async move { connection.await.unwrap() });
 
     let main_db_client = Arc::new(main_db_client);
-    let notification_channel = "lantern_cloud_autotune_jobs";
+    let notification_channel = "lantern_cloud_index_jobs";
 
     let (insert_notification_queue_tx, insert_notification_queue_rx): (
         Sender<JobInsertNotification>,
@@ -245,7 +244,7 @@ pub async fn start(args: cli::DaemonArgs, logger: Arc<Logger>) -> AnyhowVoidResu
     let (job_queue_tx, job_queue_rx): (Sender<ExternalIndexJob>, Receiver<ExternalIndexJob>) =
         mpsc::channel(args.queue_size);
 
-    let table = args.autotune_table.unwrap();
+    let table = args.external_index_table.unwrap();
 
     startup_hook(
         main_db_client.clone(),

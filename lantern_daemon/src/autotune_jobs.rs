@@ -103,18 +103,18 @@ async fn autotune_worker(
             let cancel_tx_clone = cancel_tx.clone();
 
             // We will spawn 2 tasks
-            // The first one will run embedding generation job and as soon as it finish
+            // The first one will run autotune job and as soon as it finish
             // It will send the result via job_tx channel
             // The second task will listen to cancel_rx channel, so if someone send a message
             // via cancel_tx channel it will change is_canceled to true
-            // And embedding job will be cancelled on next cycle
+            // And autotune job will be cancelled on next cycle
             // We will keep the cancel_tx in static hashmap, so we can cancel the job if
             // canceled_at will be changed to true
 
             let task_handle = tokio::spawn(async move {
                 let is_canceled = Arc::new(std::sync::RwLock::new(false));
                 let is_canceled_clone = is_canceled.clone();
-                let embedding_task = tokio::spawn(async move {
+                let task = tokio::task::spawn_blocking(move || {
                     let result = lantern_index_autotune::autotune_index(&IndexAutotuneArgs {
                         pk: "id".to_owned(),
                         job_id: Some(job_clone.id.to_string()),
@@ -133,7 +133,7 @@ async fn autotune_worker(
                         recall: job_clone.recall,
                         metric_kind: UMetricKind::from(&job_clone.metric_kind)?
                     }, progress_callback, Some(is_canceled_clone), Some(task_logger));
-                    cancel_tx_clone.send(false).await?;
+                    futures::executor::block_on(cancel_tx_clone.send(false))?;
                     result
                 });
 
@@ -144,7 +144,7 @@ async fn autotune_worker(
                     break;
                 }
 
-                embedding_task.await?
+                task.await?
             });
 
             set_job_handle(&JOBS, job.id, cancel_tx).await?;

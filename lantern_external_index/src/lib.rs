@@ -2,6 +2,7 @@ extern crate postgres;
 
 use rand::Rng;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, RwLock};
 use std::sync::{Arc, Mutex};
@@ -98,7 +99,7 @@ unsafe impl Sync for ThreadSafeIndex {}
 unsafe impl Send for ThreadSafeIndex {}
 
 fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress: u8) {
-    logger.debug(&format!("Progress {progress}%"));
+    logger.info(&format!("Progress {progress}%"));
     if progress_cb.is_some() {
         let cb = progress_cb.as_ref().unwrap();
         cb(progress);
@@ -189,6 +190,7 @@ pub fn create_usearch_index(
         Ok(())
     });
 
+    let processed_cnt = Arc::new(AtomicU64::new(0));
     for n in 0..num_cores {
         // spawn thread
         let index_ref = index_arc.clone();
@@ -196,6 +198,7 @@ pub fn create_usearch_index(
         let receiver = rx_arc.clone();
         let is_canceled = is_canceled.clone();
         let progress_tx = progress_tx.clone();
+        let processed_cnt = processed_cnt.clone();
 
         let handle = std::thread::spawn(move || -> AnyhowVoidResult {
             loop {
@@ -224,7 +227,8 @@ pub fn create_usearch_index(
                 let rows = rows.unwrap();
                 let rows_cnt = rows.len();
                 index_chunk(rows, n, index_ref.clone(), logger_ref.clone())?;
-                let mut progress = (count as f64 / rows_cnt as f64) as u8 * 100;
+                let all_count = processed_cnt.fetch_add(rows_cnt as u64, Ordering::SeqCst);
+                let mut progress = (all_count as f64 / count as f64 * 100.0) as u8;
                 if should_create_index {
                     // reserve 20% progress for index import
                     progress = if progress > 20 { progress - 20 } else { 0 };
@@ -269,7 +273,7 @@ pub fn create_usearch_index(
     // Wait for all threads to finish processing
     for handle in handles {
         if let Err(e) = handle.join() {
-            anyhow::bail!("Erro while joining thread: {:?}", e);
+            anyhow::bail!("{:?}", e);
         }
     }
 
