@@ -309,6 +309,7 @@ fn download_gzipped_ftp(
 #[pg_schema]
 mod tests {
     // use pgrx::prelude::*;
+    use pgrx::pg_test;
 
     #[pg_test]
     fn test_hello_lantern_extras() {
