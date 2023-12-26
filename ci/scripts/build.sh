@@ -55,7 +55,7 @@ function setup_lantern() {
       git submodule update --recursive && \
       mkdir build 
       pushd build
-        cmake -DUSEARCH_NO_MARCH_NATIVE=ON -DPG_CONFIG=/opt/bitnami/postgresql/bin/pg_config .. && \
+        cmake -DUSEARCH_NO_MARCH_NATIVE=ON .. && \
         make install
       popd
     popd
