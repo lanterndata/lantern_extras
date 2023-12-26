@@ -172,8 +172,7 @@ fi
 
 if [ ! -z "$SETUP_POSTGRES" ]
 then
- setup_postgres && \
- setup_cargo_deps
+ setup_postgres
 fi
   
 if [ ! -z "$SETUP_TESTS" ]
@@ -185,5 +184,6 @@ fi
 
 if [ ! -z "$PACKAGE_EXTENSION" ]
 then
+ setup_cargo_deps && \
  package_extension
 fi
