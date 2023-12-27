@@ -71,9 +71,9 @@ fn create_test_table(
     }
 
     let sample_size = client.query_one(&format!("SELECT COUNT(*) FROM {tmp_table_name}"), &[])?;
-    let sample_size: i32 = sample_size.get(0);
+    let sample_size: i64 = sample_size.get(0);
 
-    Ok((dims as usize, sample_size))
+    Ok((dims as usize, sample_size as i32))
 }
 
 fn create_results_table(client: &mut Client, result_table_full_name: &str) -> AnyhowVoidResult {
