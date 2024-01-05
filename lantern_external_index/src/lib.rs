@@ -8,7 +8,6 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{mpsc, RwLock};
 use std::sync::{Arc, Mutex};
 use std::{fs, io};
-use utils::create_index_dir;
 
 use cxx::UniquePtr;
 use lantern_logger::{LogLevel, Logger};
