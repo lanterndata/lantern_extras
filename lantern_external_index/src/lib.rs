@@ -295,8 +295,7 @@ pub fn create_usearch_index(
             let mut rng = rand::thread_rng();
             let data_dir = transaction.query_one("SHOW data_directory", &[])?;
             let data_dir: String = data_dir.try_get(0)?;
-            let index_folder = create_index_dir(&data_dir)?;
-            let index_path = format!("{index_folder}/index-{}.usearch", rng.gen_range(0..1000));
+            let index_path = format!("{data_dir}/ldb-index-{}.usearch", rng.gen_range(0..1000));
             let mut large_object = LargeObject::new(transaction, &index_path);
             large_object.create()?;
             let mut reader = fs::File::open(Path::new(&args.out))?;

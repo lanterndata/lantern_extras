@@ -79,8 +79,7 @@ fn lantern_create_external_index<'a>(
     };
 
     let mut rng = rand::thread_rng();
-    let index_folder = lantern_external_index::utils::create_index_dir(&data_dir)?;
-    let index_path = format!("{index_folder}/index-{}.usearch", rng.gen_range(0..1000));
+    let index_path = format!("{data_dir}/ldb-index-{}.usearch", rng.gen_range(0..1000));
 
     let res = lantern_external_index::create_usearch_index(
         &CreateIndexArgs {
