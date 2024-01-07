@@ -4,7 +4,7 @@ use image::io::Reader as ImageReader;
 use image::GenericImageView;
 use isahc::{prelude::*, HttpClient};
 use itertools::Itertools;
-use ndarray::{s, Array2, Array4, CowArray, Dim};
+use ndarray::{s, Array2, Array4, ArrayBase, CowArray, CowRepr, Dim, IxDynImpl};
 use nvml_wrapper::Nvml;
 use ort::session::Session;
 use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value};
@@ -19,6 +19,7 @@ use tokio::{fs, runtime};
 #[macro_use]
 extern crate lazy_static;
 
+type SessionInput<'a> = ArrayBase<CowRepr<'a, i64>, Dim<IxDynImpl>>;
 pub struct EncoderService {
     name: String,
     tokenizer: Option<Tokenizer>,
@@ -188,17 +189,122 @@ impl EncoderService {
         })
     }
 
+    fn extend_current_group(&self, current_group: &mut Vec<Vec<i64>>, current_input: &[Vec<i64>]) {
+        // Iterate over each input and append to group
+        // We are doing like this because input count
+        // Can vary based on the model
+        for (n, input) in current_input.iter().enumerate() {
+            if current_group.len() == n {
+                current_group.push(Vec::new());
+            }
+            current_group[n].extend(input.iter().copied());
+        }
+    }
+
+    fn chunk_session_input<'a>(
+        &self,
+        vecs: Vec<Vec<i64>>,
+        batch_size: usize,
+        input_type_size: usize,
+    ) -> Result<Vec<Vec<SessionInput>>, anyhow::Error> {
+        // Currently this function will only work for bert models
+        // get token count for each text
+        let token_cnt = vecs[0].len() / batch_size;
+        let input_cnt = vecs.len();
+        let mut chunks: Vec<Vec<Vec<i64>>> = vec![vec![]];
+        // Get available memory for GPU or RAM
+        let mut available_memory = self.get_available_memory()? as usize;
+
+        let batch_total_mem_needed = vecs[0].len() * input_type_size * input_cnt;
+
+        if available_memory > batch_total_mem_needed {
+            // If there's enough memory to process the batch
+            // Convert batch to CowArray and return in one group
+            let mut batch_input = Vec::with_capacity(input_cnt);
+            for input_value in vecs {
+                batch_input.push(
+                    CowArray::from(Array2::from_shape_vec(
+                        (batch_size, token_cnt),
+                        input_value,
+                    )?)
+                    .into_dyn(),
+                );
+            }
+            return Ok(vec![batch_input]);
+        }
+
+        //TODO::
+        // Calculate memory consumption for one item
+        // Then devide GPU memory / memory needed
+        // Then devide array into chunks of that count
+
+        for i in 0..batch_size {
+            // Get inputs for text at index i
+            // The input Vector with 3 vectors (input_ids, token_types, attention_mask)
+            // We are getting it by taking a slice from the whole batch input
+            let current_input: Vec<_> = (0..input_cnt)
+                .map(|l| vecs[l][i * token_cnt..(i + 1) * token_cnt].to_vec())
+                .collect();
+            // Calculate necessary memory for this input
+            let memory_needed = token_cnt * input_type_size * input_cnt;
+            // Get current group of batch
+            let current_group = chunks.last_mut().unwrap();
+            // If there's enough memory to process current group + this input
+            // We will add this input to current group
+            if memory_needed < available_memory {
+                self.extend_current_group(current_group, &current_input);
+            } else {
+                // If theres not enough space
+                // We will add the input to group anyway letting ort fail if necessary
+                // In this case we are checking if the latest group is empty
+                // Then overwrite it with current input
+                // Otherwise add new gorup with the current input in it
+                if current_group.is_empty() {
+                    *current_group = current_input;
+                } else {
+                    chunks.push(current_input);
+                }
+            }
+            // Actually there might be case when memory needed
+            // will be higher then available memory
+            // but as this numbers are just approximate calculations
+            // we will let the memory allocation fail from ort
+            if available_memory >= memory_needed {
+                available_memory -= memory_needed;
+            }
+        }
+
+        // Here we are just converting the inputs of Vec<i64> to CowArray
+        // To feed it to onnx
+        let mut input_chunks: Vec<Vec<ArrayBase<CowRepr<'_, i64>, Dim<IxDynImpl>>>> =
+            Vec::with_capacity(chunks.len());
+
+        for chunk in chunks {
+            let group_batch_size = chunk[0].len() / token_cnt;
+            let mut current_chunk = Vec::with_capacity(chunk.len());
+
+            for vals in chunk {
+                current_chunk.push(
+                    CowArray::from(Array2::from_shape_vec((group_batch_size, token_cnt), vals)?)
+                        .into_dyn(),
+                );
+            }
+            input_chunks.push(current_chunk);
+        }
+        Ok(input_chunks)
+    }
+
     fn process_text_bert(
         &self,
-        text: &Vec<&str>,
+        texts: &Vec<&str>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         let session = &self.encoder;
-        let text_len = text.len();
+        let text_len = texts.len();
         let preprocessed = self
             .tokenizer
             .as_ref()
             .unwrap()
-            .encode_batch(text.clone(), true)?;
+            .encode_batch(texts.clone(), true)?;
 
         let mut vecs = Vec::with_capacity(session.inputs.len());
 
@@ -229,33 +335,41 @@ impl EncoderService {
                 _ => {}
             }
             if let Some(v) = val {
-                vecs.push(
-                    CowArray::from(Array2::from_shape_vec((text_len, v.len() / text_len), v)?)
-                        .into_dyn(),
-                );
+                vecs.push(v);
             }
         }
 
-        let inputs = vecs
+        let token_size = vecs[0].len() / text_len;
+        let input_chunks = self.chunk_session_input(vecs, text_len, 64)?;
+        let embeddings = input_chunks
             .iter()
-            .map(|v| Value::from_array(session.allocator(), &v).unwrap())
-            .collect();
+            .map(|chunk| {
+                // Iterate over each chunk and create embedding for that chunk
+                println!("Chunk length {}", chunk[0].len() / token_size);
+                let inputs: Vec<Value<'_>> = chunk
+                    .iter()
+                    .map(|v| Value::from_array(session.allocator(), &v).unwrap())
+                    .collect();
 
-        let outputs = session.run(inputs)?;
+                let outputs = session.run(inputs).unwrap();
 
-        let binding = outputs[0].try_extract()?;
-        let embeddings = binding.view();
-        let embeddings = embeddings.slice(s![.., 0, ..]);
-        let embeddings: Vec<f32> = embeddings.iter().map(|s| *s).collect();
-        let output_dims = session.outputs[0].dimensions.last().unwrap().unwrap() as usize;
+                let binding = outputs[0].try_extract()?;
+                let embeddings = binding.view();
+                let embeddings = embeddings.slice(s![.., 0, ..]);
+                let embeddings: Vec<f32> = embeddings.iter().map(|s| *s).collect();
+                let output_dims = session.outputs[0].dimensions.last().unwrap().unwrap() as usize;
 
-        Ok(embeddings
-            .iter()
-            .map(|s| *s)
-            .chunks(output_dims)
-            .into_iter()
-            .map(|b| b.collect())
-            .collect())
+                Ok(embeddings
+                    .iter()
+                    .map(|s| *s)
+                    .chunks(output_dims)
+                    .into_iter()
+                    .map(|b| b.collect())
+                    .collect::<Vec<Vec<f32>>>())
+            })
+            .collect::<Result<Vec<Vec<Vec<f32>>>, anyhow::Error>>();
+
+        Ok(embeddings.map(|vec_vec| vec_vec.into_iter().flatten().collect())?)
     }
 
     fn process_text_clip(
@@ -310,13 +424,38 @@ impl EncoderService {
             .collect())
     }
 
+    fn get_available_memory(&self) -> Result<u64, anyhow::Error> {
+        let mut _nvml_instance = None;
+        let mut gpu_device = None;
+
+        if let Ok(nvml) = Nvml::init() {
+            _nvml_instance = Some(nvml);
+            let _nvml_insteance = _nvml_instance.as_mut().unwrap();
+            let nvml_device = _nvml_insteance.device_by_index(0);
+            if let Ok(device) = nvml_device {
+                gpu_device = Some(device);
+            }
+        }
+
+        if gpu_device.is_none() {
+            let mut sys = System::new_all();
+            sys.refresh_all();
+            return Ok(sys.total_memory() - sys.used_memory());
+        }
+
+        let gpu_device = gpu_device.as_ref().unwrap();
+
+        let mem_info = gpu_device.memory_info()?;
+        Ok(mem_info.free)
+    }
+
     fn process_text(
         &self,
-        text: &Vec<&str>,
+        texts: &Vec<&str>,
     ) -> Result<Vec<Vec<f32>>, Box<dyn std::error::Error + Send + Sync>> {
         match self.name.as_str() {
-            "clip/ViT-B-32-textual" => self.process_text_clip(text),
-            _ => self.process_text_bert(text),
+            "clip/ViT-B-32-textual" => self.process_text_clip(texts),
+            _ => self.process_text_bert(texts),
         }
     }
 
