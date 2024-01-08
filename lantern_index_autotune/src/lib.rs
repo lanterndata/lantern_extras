@@ -34,7 +34,7 @@ struct AutotuneResult {
     m: i32,
     recall: f64,
     latency: f64,
-    indexing_duration: i32,
+    indexing_duration: f64,
 }
 
 fn create_test_table(
@@ -155,7 +155,7 @@ fn get_existing_results_for_model(
             m: row.get::<&str, i32>("m"),
             recall: row.get::<&str, f64>("recall"),
             latency: row.get::<&str, f64>("latency"),
-            indexing_duration: row.get::<&str, i32>("build_time"),
+            indexing_duration: row.get::<&str, f64>("build_time"),
         });
     }
 
@@ -179,9 +179,9 @@ fn find_best_variant(autotune_results: &Vec<AutotuneResult>, target_recall: f64)
 
     // Then we will sort by latency + index creation time
     // So if the target recall is met we can create an index which will be faster
-    let mut filtered_results: Vec<(i32, &AutotuneResult)> = filtered_results
+    let mut filtered_results: Vec<(f64, &AutotuneResult)> = filtered_results
         .iter()
-        .map(|r| (r.latency as i32 + r.indexing_duration, *r))
+        .map(|r| (r.latency + r.indexing_duration, *r))
         .collect();
 
     filtered_results.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
@@ -250,8 +250,8 @@ fn calculate_recall_and_latency(
 
     recall = recall / ground_truth.len() as f64;
     latency = latency / ground_truth.len() as f64;
-    recall = f64::trunc(recall * 100.0) / 100.0; // rount to 2 decimal points
-    latency = f64::trunc(latency * 100.0) / 100.0; // rount to 2 decimal points
+    recall = f64::trunc(recall * 100.0) / 100.0; // round to 2 decimal points
+    latency = f64::trunc(latency * 100.0) / 100.0; // round to 2 decimal points
 
     Ok((recall, latency))
 }
@@ -372,8 +372,8 @@ pub fn autotune_index(
     // Create db client for exporting and finding existing results
     let mut autotune_results: Vec<AutotuneResult> = Vec::with_capacity(index_variants.len());
     let export_uri = args.export_db_uri.clone().unwrap_or(args.uri.clone());
-    let uri = append_params_to_uri(&export_uri, CONNECTION_PARAMS);
-    let mut export_client = Client::connect(&uri, NoTls)?;
+    let export_uri = append_params_to_uri(&export_uri, CONNECTION_PARAMS);
+    let mut export_client = Client::connect(&export_uri, NoTls)?;
 
     // If the model name is provided we will check if we already have results for that model
     // And if so we will instead use precomputed results
@@ -454,7 +454,9 @@ pub fn autotune_index(
                 Some(is_canceled.clone()),
                 Some(Logger::new(&logger.label, LogLevel::Info)),
             )?;
-            let indexing_duration = start.elapsed().as_secs() as usize;
+            let mut indexing_duration = start.elapsed().as_secs() as f64;
+            indexing_duration = f64::trunc(indexing_duration * 100.0) / 100.0; // round to 2 decimal points
+
             let (recall, latency) = calculate_recall_and_latency(
                 &mut client,
                 &ground_truth,
@@ -468,7 +470,7 @@ pub fn autotune_index(
                 m: variant.m as i32,
                 recall,
                 latency,
-                indexing_duration: indexing_duration as i32,
+                indexing_duration,
             });
             progress += progress_per_iter;
             report_progress(&progress_cb, &logger, progress);

@@ -8,7 +8,7 @@
         "table" text NOT NULL,
         "column" text NOT NULL,
         "operator" text NOT NULL,
-        "target_recall" int NOT NULL,
+        "target_recall" DOUBLE PRECISION NOT NULL,
         "embedding_model" text NULL,
         "k" int NOT NULL,
         "n" int NOT NULL,
@@ -30,9 +30,9 @@
         ef INT NOT NULL, 
         efc INT  NOT NULL, 
         m INT  NOT NULL, 
-        recall FLOAT NOT NULL, 
-        latency FLOAT NOT NULL, 
-        build_time INT NOT NULL
+        recall DOUBLE PRECISION NOT NULL,
+        latency DOUBLE PRECISION NOT NULL,
+        build_time DOUBLE PRECISION NULL
    );
 */
 
