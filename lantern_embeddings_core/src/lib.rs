@@ -246,6 +246,7 @@ impl EncoderService {
     }
 
     fn get_required_memory(&self, seq_length: usize) -> usize {
+        // Memory for one token per error = 73000
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(&*self.name).unwrap();
 
@@ -294,6 +295,7 @@ impl EncoderService {
         let memory_needed_for_one_input = self.get_required_memory(token_cnt as usize);
         // Get max batch size
         let max_batch_size = (available_memory / memory_needed_for_one_input) as usize;
+        let max_token_cnt = max_batch_size * token_cnt;
 
         let mut inputs = Vec::with_capacity(batch_size / max_batch_size);
         // Make vector of
@@ -303,7 +305,7 @@ impl EncoderService {
         //   [tokenIds, tokenTypeIds, Mask]
         // ]
         for input in vecs {
-            for (index, chunk) in input.chunks(max_batch_size).enumerate() {
+            for (index, chunk) in input.chunks(max_token_cnt).enumerate() {
                 if inputs.len() == index {
                     inputs.push(Vec::with_capacity(input_cnt));
                 }
