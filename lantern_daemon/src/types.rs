@@ -55,6 +55,7 @@ pub struct AutotuneJob {
     pub model_name: Option<String>,
     pub recall: usize,
     pub k: u16,
+    pub sample_size: usize,
     pub create_index: bool,
 }
 
@@ -70,6 +71,7 @@ impl AutotuneJob {
             model_name: row.get::<&str, Option<String>>("model"),
             recall: row.get::<&str, i32>("target_recall") as usize,
             k: row.get::<&str, i32>("k") as u16,
+            sample_size: row.get::<&str, i32>("sample_size") as usize,
             create_index: row.get::<&str, bool>("create_index"),
             is_init: true,
         }
