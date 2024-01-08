@@ -40,6 +40,13 @@ const MAX_IMAGE_SIZE: usize = 1024 * 1024 * 10; // 10 MB
 
 struct ModelInfo {
     url: String,
+    param_cnt: Option<usize>,
+    float_size: usize,
+    layer_cnt: Option<usize>,
+    intermediate_dim: Option<usize>,
+    output_dim: Option<usize>,
+    input_dim: Option<usize>,
+    has_mem_info: bool,
     tokenizer_url: Option<String>,
     encoder_args: EncoderOptions,
     encoder: Option<EncoderService>,
@@ -52,6 +59,12 @@ struct ModelInfoBuilder {
     input_image_size: Option<usize>,
     padding_params: Option<PaddingParams>,
     truncation_params: Option<TruncationParams>,
+    param_cnt: Option<usize>,
+    float_size: Option<usize>,
+    layer_cnt: Option<usize>,
+    intermediate_dim: Option<usize>,
+    output_dim: Option<usize>,
+    input_dim: Option<usize>,
 }
 
 impl ModelInfoBuilder {
@@ -63,6 +76,12 @@ impl ModelInfoBuilder {
             input_image_size: None,
             padding_params: None,
             truncation_params: None,
+            param_cnt: None,
+            float_size: None,
+            layer_cnt: None,
+            intermediate_dim: None,
+            output_dim: None,
+            input_dim: None,
         }
     }
 
@@ -78,6 +97,31 @@ impl ModelInfoBuilder {
 
     fn with_input_image_size(&mut self, len: usize) -> &mut Self {
         self.input_image_size = Some(len);
+        self
+    }
+
+    fn with_param_cnt(&mut self, param_cnt: usize) -> &mut Self {
+        self.param_cnt = Some(param_cnt);
+        self
+    }
+
+    fn with_layer_cnt(&mut self, later_cnt: usize) -> &mut Self {
+        self.layer_cnt = Some(later_cnt);
+        self
+    }
+
+    fn with_intermediate_dim(&mut self, intermediate_dim: usize) -> &mut Self {
+        self.intermediate_dim = Some(intermediate_dim);
+        self
+    }
+
+    fn with_output_dim(&mut self, output_dim: usize) -> &mut Self {
+        self.output_dim = Some(output_dim);
+        self
+    }
+
+    fn with_input_dim(&mut self, input_dim: usize) -> &mut Self {
+        self.input_dim = Some(input_dim);
         self
     }
 
@@ -97,9 +141,21 @@ impl ModelInfoBuilder {
             truncation_params: self.truncation_params.clone(),
         };
 
+        let has_mem_info = self.output_dim.is_some()
+            && self.input_dim.is_some()
+            && self.param_cnt.is_some()
+            && self.layer_cnt.is_some();
+
         ModelInfo {
             url: model_url,
             tokenizer_url,
+            intermediate_dim: self.intermediate_dim.clone(),
+            output_dim: self.output_dim.clone(),
+            input_dim: self.input_dim.clone(),
+            param_cnt: self.param_cnt.clone(),
+            float_size: self.float_size.unwrap_or(32),
+            layer_cnt: self.layer_cnt.clone(),
+            has_mem_info,
             encoder: None,
             encoder_args,
         }
@@ -109,7 +165,7 @@ impl ModelInfoBuilder {
 lazy_static! {
     static ref MODEL_INFO_MAP: RwLock<HashMap<&'static str, ModelInfo>> = RwLock::new(HashMap::from([
         ("clip/ViT-B-32-textual", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/textual").with_tokenizer(true).build()),
-        ("clip/ViT-B-32-visual", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/visual").with_input_image_size(224).with_visual(true).build()),
+        ("clip/ViT-B-32-visual", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/openai/ViT-B-32/visual").with_visual(true).with_input_image_size(224).build()),
         ("BAAI/bge-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-small-en-v1.5").with_tokenizer(true).build()),
         ("BAAI/bge-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-base-en-v1.5").with_tokenizer(true).build()),
         ("BAAI/bge-large-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/BAAI/bge-large-en-v1.5").with_tokenizer(true).build()),
@@ -121,8 +177,8 @@ lazy_static! {
         ("microsoft/all-MiniLM-L12-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-MiniLM-L12-v2").with_tokenizer(true).build()),
         ("microsoft/all-mpnet-base-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-mpnet-base-v2").with_tokenizer(true).build()),
         ("transformers/multi-qa-mpnet-base-dot-v1", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/transformers/multi-qa-mpnet-base-dot-v1").with_tokenizer(true).build()),
-        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).build()),
-        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).build())
+        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).with_param_cnt(33000000).with_output_dim(768).with_intermediate_dim(768).with_layer_cnt(4).with_input_dim(8192).build()),
+        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).with_output_dim(137000000).with_intermediate_dim(768).with_layer_cnt(12).with_input_dim(8192).build())
     ]));
 }
 
@@ -189,11 +245,42 @@ impl EncoderService {
         })
     }
 
+    fn get_required_memory(&self, seq_length: usize) -> usize {
+        let map = MODEL_INFO_MAP.read().unwrap();
+        let model_info = map.get(&*self.name).unwrap();
+
+        if !model_info.has_mem_info {
+            return 1;
+        }
+        let num_parameters = model_info.param_cnt.unwrap();
+        let float_size = model_info.float_size;
+        let num_layers = model_info.layer_cnt.unwrap();
+        let input_dim = model_info.input_dim.unwrap();
+        let intermediate_dim = model_info.intermediate_dim.unwrap();
+        let output_dim = model_info.output_dim.unwrap();
+        // Memory for model parameters
+        let memory_parameters = num_parameters * float_size;
+
+        // Memory for intermediate outputs for L layers
+        let memory_intermediate = num_layers * (seq_length * intermediate_dim) * float_size;
+
+        // Memory for input tensors
+        let memory_input = (seq_length * input_dim) * float_size;
+
+        // Memory for output tensor
+        let memory_output = (seq_length * output_dim) * float_size;
+
+        // Calculate total memory
+        let total_memory = memory_parameters + memory_intermediate + memory_input + memory_output;
+
+        // Add 10% additional memory for overhead
+        return (total_memory as f64 * 1.1) as usize;
+    }
+
     fn chunk_session_input<'a>(
         &self,
         vecs: Vec<Vec<i64>>,
         batch_size: usize,
-        input_type_size: usize,
     ) -> Result<Vec<Vec<SessionInput>>, anyhow::Error> {
         // Currently this function will only work for bert models
         // get token count for each text
@@ -204,10 +291,7 @@ impl EncoderService {
         // Calculate memory consumption for one item
         // Then devide GPU memory / memory needed
         // Then devide array into chunks of that count
-        let memory_needed_for_one_input = token_cnt * input_type_size * input_cnt;
-        // Add extra 10% to be more safe
-        let memory_needed_for_one_input =
-            (memory_needed_for_one_input as f64 * 1.1 as f64) as usize;
+        let memory_needed_for_one_input = self.get_required_memory(token_cnt as usize);
         // Get max batch size
         let max_batch_size = (available_memory / memory_needed_for_one_input) as usize;
 
@@ -224,9 +308,10 @@ impl EncoderService {
                     inputs.push(Vec::with_capacity(input_cnt));
                 }
                 let group: &mut Vec<SessionInput> = inputs.get_mut(index).unwrap();
+                let group_batch_size = chunk.len() / token_cnt;
                 group.push(
                     CowArray::from(Array2::from_shape_vec(
-                        (chunk.len() / token_cnt, token_cnt),
+                        (group_batch_size, token_cnt),
                         chunk.to_vec(),
                     )?)
                     .into_dyn(),
@@ -283,7 +368,7 @@ impl EncoderService {
         }
 
         let token_size = vecs[0].len() / text_len;
-        let input_chunks = self.chunk_session_input(vecs, text_len, 64)?;
+        let input_chunks = self.chunk_session_input(vecs, text_len)?;
         let embeddings = input_chunks
             .iter()
             .map(|chunk| {
