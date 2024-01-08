@@ -189,18 +189,6 @@ impl EncoderService {
         })
     }
 
-    fn extend_current_group(&self, current_group: &mut Vec<Vec<i64>>, current_input: &[Vec<i64>]) {
-        // Iterate over each input and append to group
-        // We are doing like this because input count
-        // Can vary based on the model
-        for (n, input) in current_input.iter().enumerate() {
-            if current_group.len() == n {
-                current_group.push(Vec::new());
-            }
-            current_group[n].extend(input.iter().copied());
-        }
-    }
-
     fn chunk_session_input<'a>(
         &self,
         vecs: Vec<Vec<i64>>,
@@ -211,87 +199,42 @@ impl EncoderService {
         // get token count for each text
         let token_cnt = vecs[0].len() / batch_size;
         let input_cnt = vecs.len();
-        let mut chunks: Vec<Vec<Vec<i64>>> = vec![vec![]];
         // Get available memory for GPU or RAM
-        let mut available_memory = self.get_available_memory()? as usize;
+        let available_memory = self.get_available_memory()? as usize;
+        // Calculate memory consumption for one item
+        // Then devide GPU memory / memory needed
+        // Then devide array into chunks of that count
+        let memory_needed_for_one_input = token_cnt * input_type_size * input_cnt;
+        // Add extra 10% to be more safe
+        let memory_needed_for_one_input =
+            (memory_needed_for_one_input as f64 * 1.1 as f64) as usize;
+        // Get max batch size
+        let max_batch_size = (available_memory / memory_needed_for_one_input) as usize;
 
-        let batch_total_mem_needed = vecs[0].len() * input_type_size * input_cnt;
-
-        if available_memory > batch_total_mem_needed {
-            // If there's enough memory to process the batch
-            // Convert batch to CowArray and return in one group
-            let mut batch_input = Vec::with_capacity(input_cnt);
-            for input_value in vecs {
-                batch_input.push(
+        let mut inputs = Vec::with_capacity(batch_size / max_batch_size);
+        // Make vector of
+        // [
+        //   [tokenIds, tokenTypeIds, Mask],
+        //   [tokenIds, tokenTypeIds, Mask],
+        //   [tokenIds, tokenTypeIds, Mask]
+        // ]
+        for input in vecs {
+            for (index, chunk) in input.chunks(max_batch_size).enumerate() {
+                if inputs.len() == index {
+                    inputs.push(Vec::with_capacity(input_cnt));
+                }
+                let group: &mut Vec<SessionInput> = inputs.get_mut(index).unwrap();
+                group.push(
                     CowArray::from(Array2::from_shape_vec(
-                        (batch_size, token_cnt),
-                        input_value,
+                        (chunk.len() / token_cnt, token_cnt),
+                        chunk.to_vec(),
                     )?)
                     .into_dyn(),
                 );
             }
-            return Ok(vec![batch_input]);
         }
 
-        //TODO::
-        // Calculate memory consumption for one item
-        // Then devide GPU memory / memory needed
-        // Then devide array into chunks of that count
-
-        for i in 0..batch_size {
-            // Get inputs for text at index i
-            // The input Vector with 3 vectors (input_ids, token_types, attention_mask)
-            // We are getting it by taking a slice from the whole batch input
-            let current_input: Vec<_> = (0..input_cnt)
-                .map(|l| vecs[l][i * token_cnt..(i + 1) * token_cnt].to_vec())
-                .collect();
-            // Calculate necessary memory for this input
-            let memory_needed = token_cnt * input_type_size * input_cnt;
-            // Get current group of batch
-            let current_group = chunks.last_mut().unwrap();
-            // If there's enough memory to process current group + this input
-            // We will add this input to current group
-            if memory_needed < available_memory {
-                self.extend_current_group(current_group, &current_input);
-            } else {
-                // If theres not enough space
-                // We will add the input to group anyway letting ort fail if necessary
-                // In this case we are checking if the latest group is empty
-                // Then overwrite it with current input
-                // Otherwise add new gorup with the current input in it
-                if current_group.is_empty() {
-                    *current_group = current_input;
-                } else {
-                    chunks.push(current_input);
-                }
-            }
-            // Actually there might be case when memory needed
-            // will be higher then available memory
-            // but as this numbers are just approximate calculations
-            // we will let the memory allocation fail from ort
-            if available_memory >= memory_needed {
-                available_memory -= memory_needed;
-            }
-        }
-
-        // Here we are just converting the inputs of Vec<i64> to CowArray
-        // To feed it to onnx
-        let mut input_chunks: Vec<Vec<ArrayBase<CowRepr<'_, i64>, Dim<IxDynImpl>>>> =
-            Vec::with_capacity(chunks.len());
-
-        for chunk in chunks {
-            let group_batch_size = chunk[0].len() / token_cnt;
-            let mut current_chunk = Vec::with_capacity(chunk.len());
-
-            for vals in chunk {
-                current_chunk.push(
-                    CowArray::from(Array2::from_shape_vec((group_batch_size, token_cnt), vals)?)
-                        .into_dyn(),
-                );
-            }
-            input_chunks.push(current_chunk);
-        }
-        Ok(input_chunks)
+        Ok(inputs)
     }
 
     fn process_text_bert(
