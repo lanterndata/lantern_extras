@@ -8,6 +8,7 @@ use ndarray::{s, Array2, Array4, ArrayBase, CowArray, CowRepr, Dim, IxDynImpl};
 use nvml_wrapper::Nvml;
 use ort::session::Session;
 use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value};
+use std::cmp;
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -153,8 +154,8 @@ lazy_static! {
         ("microsoft/all-MiniLM-L12-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-MiniLM-L12-v2").with_tokenizer(true).build()),
         ("microsoft/all-mpnet-base-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-mpnet-base-v2").with_tokenizer(true).build()),
         ("transformers/multi-qa-mpnet-base-dot-v1", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/transformers/multi-qa-mpnet-base-dot-v1").with_tokenizer(true).build()),
-        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).with_layer_cnt(4).head_cnt(4).with_head_dim(64).build()),
-        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).with_layer_cnt(12).head_cnt(12).with_head_dim(64).build())
+        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).with_layer_cnt(4).with_head_cnt(4).with_head_dim(64).build()),
+        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).with_layer_cnt(12).with_head_cnt(12).with_head_dim(64).build())
     ]));
 }
 
@@ -247,8 +248,8 @@ impl EncoderService {
         let total_memory = ((4 * num_layers * num_heads.pow(2) * head_dim.pow(2))
             + num_layers * num_heads * seq_length * (seq_length + 2 * head_dim))
             * float64_bytes;
-        // Add 10% additional memory for overhead
-        return (total_memory as f64 * 1.1) as usize;
+        // Add 20% additional memory for overhead
+        return (total_memory as f64 * 1.2) as usize;
     }
 
     fn chunk_session_input<'a>(
@@ -267,11 +268,11 @@ impl EncoderService {
         // Then devide array into chunks of that count
         let memory_needed_for_one_input = self.get_required_memory(token_cnt as usize);
         // Get max batch size
-        let max_batch_size = (available_memory / memory_needed_for_one_input) as usize;
+        let max_batch_size = cmp::max(1, (available_memory / memory_needed_for_one_input) as usize);
         let max_token_cnt = max_batch_size * token_cnt;
 
         let mut inputs = Vec::with_capacity(batch_size / max_batch_size);
-        // Make vector of
+        // Make vector of shape
         // [
         //   [tokenIds, tokenTypeIds, Mask],
         //   [tokenIds, tokenTypeIds, Mask],
@@ -348,7 +349,6 @@ impl EncoderService {
             .iter()
             .map(|chunk| {
                 // Iterate over each chunk and create embedding for that chunk
-                println!("Chunk length {}", chunk[0].len() / token_size);
                 let inputs: Vec<Value<'_>> = chunk
                     .iter()
                     .map(|v| Value::from_array(session.allocator(), &v).unwrap())
