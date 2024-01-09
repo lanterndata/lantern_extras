@@ -21,8 +21,17 @@ use tokio::{fs, runtime};
 extern crate lazy_static;
 
 type SessionInput<'a> = ArrayBase<CowRepr<'a, i64>, Dim<IxDynImpl>>;
+
+#[derive(Debug, Clone)]
+pub struct ModelParams {
+    layer_cnt: Option<usize>,
+    head_cnt: Option<usize>,
+    head_dim: Option<usize>,
+}
+
 pub struct EncoderService {
     name: String,
+    model_params: ModelParams,
     tokenizer: Option<Tokenizer>,
     vision_size: Option<usize>,
     encoder: Session,
@@ -41,10 +50,7 @@ const MAX_IMAGE_SIZE: usize = 1024 * 1024 * 10; // 10 MB
 
 struct ModelInfo {
     url: String,
-    layer_cnt: Option<usize>,
-    head_cnt: Option<usize>,
-    head_dim: Option<usize>,
-    has_mem_info: bool,
+    params: ModelParams,
     tokenizer_url: Option<String>,
     encoder_args: EncoderOptions,
     encoder: Option<EncoderService>,
@@ -123,16 +129,14 @@ impl ModelInfoBuilder {
             truncation_params: self.truncation_params.clone(),
         };
 
-        let has_mem_info =
-            self.layer_cnt.is_some() && self.head_cnt.is_some() && self.head_dim.is_some();
-
         ModelInfo {
             url: model_url,
             tokenizer_url,
-            layer_cnt: self.layer_cnt.clone(),
-            head_cnt: self.head_cnt.clone(),
-            head_dim: self.head_dim.clone(),
-            has_mem_info,
+            params: ModelParams {
+                layer_cnt: self.layer_cnt.clone(),
+                head_cnt: self.head_cnt.clone(),
+                head_dim: self.head_dim.clone(),
+            },
             encoder: None,
             encoder_args,
         }
@@ -184,6 +188,7 @@ impl EncoderService {
     pub fn new(
         environment: &Arc<Environment>,
         model_name: &str,
+        model_params: ModelParams,
         model_folder: &PathBuf,
         args: &EncoderOptions,
     ) -> Result<EncoderService, Box<dyn std::error::Error + Send + Sync>> {
@@ -218,21 +223,24 @@ impl EncoderService {
             name: model_name.to_string(),
             tokenizer,
             encoder,
+            model_params,
             vision_size: args.input_image_size,
         })
     }
 
     fn get_required_memory(&self, seq_length: usize) -> usize {
-        let map = MODEL_INFO_MAP.read().unwrap();
-        let model_info = map.get(&*self.name).unwrap();
+        let model_params = &self.model_params;
 
-        if !model_info.has_mem_info {
+        if model_params.head_cnt.is_none()
+            || model_params.head_dim.is_none()
+            || model_params.layer_cnt.is_none()
+        {
             return 1;
         }
 
-        let num_layers = model_info.layer_cnt.unwrap();
-        let num_heads = model_info.head_cnt.unwrap();
-        let head_dim = model_info.head_dim.unwrap();
+        let num_layers = model_params.layer_cnt.unwrap();
+        let num_heads = model_params.head_cnt.unwrap();
+        let head_dim = model_params.head_dim.unwrap();
         /*
         R = n_tr_blocks = number of transformer blocks in the model (e.g layers)
         N = n_head = number of attention heads
@@ -269,6 +277,10 @@ impl EncoderService {
         let memory_needed_for_one_input = self.get_required_memory(token_cnt as usize);
         // Get max batch size
         let max_batch_size = cmp::max(1, (available_memory / memory_needed_for_one_input) as usize);
+        // For models which does not need chunking the get_required_memory will return 1
+        // And max_batch_size will be higher than provided batch_size, so we will take
+        // The minimum of batch_size and max_batch_size
+        let max_batch_size = cmp::min(batch_size, max_batch_size);
         let max_token_cnt = max_batch_size * token_cnt;
 
         let mut inputs = Vec::with_capacity(batch_size / max_batch_size);
@@ -692,6 +704,7 @@ pub mod clip {
         let encoder = EncoderService::new(
             &ONNX_ENV,
             model_name,
+            model_info.params.clone(),
             &model_folder,
             &model_info.encoder_args,
         );
