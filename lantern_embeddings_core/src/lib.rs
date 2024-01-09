@@ -40,12 +40,9 @@ const MAX_IMAGE_SIZE: usize = 1024 * 1024 * 10; // 10 MB
 
 struct ModelInfo {
     url: String,
-    param_cnt: Option<usize>,
-    float_size: usize,
     layer_cnt: Option<usize>,
-    intermediate_dim: Option<usize>,
-    output_dim: Option<usize>,
-    input_dim: Option<usize>,
+    head_cnt: Option<usize>,
+    head_dim: Option<usize>,
     has_mem_info: bool,
     tokenizer_url: Option<String>,
     encoder_args: EncoderOptions,
@@ -59,12 +56,9 @@ struct ModelInfoBuilder {
     input_image_size: Option<usize>,
     padding_params: Option<PaddingParams>,
     truncation_params: Option<TruncationParams>,
-    param_cnt: Option<usize>,
-    float_size: Option<usize>,
     layer_cnt: Option<usize>,
-    intermediate_dim: Option<usize>,
-    output_dim: Option<usize>,
-    input_dim: Option<usize>,
+    head_cnt: Option<usize>,
+    head_dim: Option<usize>,
 }
 
 impl ModelInfoBuilder {
@@ -76,12 +70,9 @@ impl ModelInfoBuilder {
             input_image_size: None,
             padding_params: None,
             truncation_params: None,
-            param_cnt: None,
-            float_size: None,
             layer_cnt: None,
-            intermediate_dim: None,
-            output_dim: None,
-            input_dim: None,
+            head_cnt: None,
+            head_dim: None,
         }
     }
 
@@ -100,28 +91,18 @@ impl ModelInfoBuilder {
         self
     }
 
-    fn with_param_cnt(&mut self, param_cnt: usize) -> &mut Self {
-        self.param_cnt = Some(param_cnt);
+    fn with_layer_cnt(&mut self, layer_cnt: usize) -> &mut Self {
+        self.layer_cnt = Some(layer_cnt);
         self
     }
 
-    fn with_layer_cnt(&mut self, later_cnt: usize) -> &mut Self {
-        self.layer_cnt = Some(later_cnt);
+    fn with_head_cnt(&mut self, head_cnt: usize) -> &mut Self {
+        self.head_cnt = Some(head_cnt);
         self
     }
 
-    fn with_intermediate_dim(&mut self, intermediate_dim: usize) -> &mut Self {
-        self.intermediate_dim = Some(intermediate_dim);
-        self
-    }
-
-    fn with_output_dim(&mut self, output_dim: usize) -> &mut Self {
-        self.output_dim = Some(output_dim);
-        self
-    }
-
-    fn with_input_dim(&mut self, input_dim: usize) -> &mut Self {
-        self.input_dim = Some(input_dim);
+    fn with_head_dim(&mut self, head_dim: usize) -> &mut Self {
+        self.head_dim = Some(head_dim);
         self
     }
 
@@ -141,20 +122,15 @@ impl ModelInfoBuilder {
             truncation_params: self.truncation_params.clone(),
         };
 
-        let has_mem_info = self.output_dim.is_some()
-            && self.input_dim.is_some()
-            && self.param_cnt.is_some()
-            && self.layer_cnt.is_some();
+        let has_mem_info =
+            self.layer_cnt.is_some() && self.head_cnt.is_some() && self.head_dim.is_some();
 
         ModelInfo {
             url: model_url,
             tokenizer_url,
-            intermediate_dim: self.intermediate_dim.clone(),
-            output_dim: self.output_dim.clone(),
-            input_dim: self.input_dim.clone(),
-            param_cnt: self.param_cnt.clone(),
-            float_size: self.float_size.unwrap_or(32),
             layer_cnt: self.layer_cnt.clone(),
+            head_cnt: self.head_cnt.clone(),
+            head_dim: self.head_dim.clone(),
             has_mem_info,
             encoder: None,
             encoder_args,
@@ -177,8 +153,8 @@ lazy_static! {
         ("microsoft/all-MiniLM-L12-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-MiniLM-L12-v2").with_tokenizer(true).build()),
         ("microsoft/all-mpnet-base-v2", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/microsoft/all-mpnet-base-v2").with_tokenizer(true).build()),
         ("transformers/multi-qa-mpnet-base-dot-v1", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/transformers/multi-qa-mpnet-base-dot-v1").with_tokenizer(true).build()),
-        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).with_param_cnt(33000000).with_output_dim(768).with_intermediate_dim(768).with_layer_cnt(4).with_input_dim(8192).build()),
-        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).with_output_dim(137000000).with_intermediate_dim(768).with_layer_cnt(12).with_input_dim(8192).build())
+        ("jinaai/jina-embeddings-v2-small-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-small-en").with_tokenizer(true).with_layer_cnt(4).head_cnt(4).with_head_dim(64).build()),
+        ("jinaai/jina-embeddings-v2-base-en", ModelInfoBuilder::new("https://huggingface.co/varik77/onnx-models/resolve/main/jinaai/jina-embeddings-v2-base-en").with_tokenizer(true).with_layer_cnt(12).head_cnt(12).with_head_dim(64).build())
     ]));
 }
 
@@ -246,34 +222,31 @@ impl EncoderService {
     }
 
     fn get_required_memory(&self, seq_length: usize) -> usize {
-        // Memory for one token per error = 73000
         let map = MODEL_INFO_MAP.read().unwrap();
         let model_info = map.get(&*self.name).unwrap();
 
         if !model_info.has_mem_info {
             return 1;
         }
-        let num_parameters = model_info.param_cnt.unwrap();
-        let float_size = model_info.float_size;
+
         let num_layers = model_info.layer_cnt.unwrap();
-        let input_dim = model_info.input_dim.unwrap();
-        let intermediate_dim = model_info.intermediate_dim.unwrap();
-        let output_dim = model_info.output_dim.unwrap();
-        // Memory for model parameters
-        let memory_parameters = num_parameters * float_size;
+        let num_heads = model_info.head_cnt.unwrap();
+        let head_dim = model_info.head_dim.unwrap();
+        /*
+        R = n_tr_blocks = number of transformer blocks in the model (e.g layers)
+        N = n_head = number of attention heads
+        D = dim = dimension of each attention head
+        S = sequence_length = input sequence length
 
-        // Memory for intermediate outputs for L layers
-        let memory_intermediate = num_layers * (seq_length * intermediate_dim) * float_size;
-
-        // Memory for input tensors
-        let memory_input = (seq_length * input_dim) * float_size;
-
-        // Memory for output tensor
-        let memory_output = (seq_length * output_dim) * float_size;
-
-        // Calculate total memory
-        let total_memory = memory_parameters + memory_intermediate + memory_input + memory_output;
-
+        memory modal = 4 * R * N^2 * D^2
+        memory activations = RBNS(S + 2D)
+        total memory required = ((4 * R * N^2 * D^2) + RBNS(S + 2D)) * float64 memory in bytes
+        Formula taken from: https://www.linkedin.com/pulse/estimating-memory-requirements-transformer-networks-schartz-rehan/
+        */
+        let float64_bytes = 8;
+        let total_memory = ((4 * num_layers * num_heads.pow(2) * head_dim.pow(2))
+            + num_layers * num_heads * seq_length * (seq_length + 2 * head_dim))
+            * float64_bytes;
         // Add 10% additional memory for overhead
         return (total_memory as f64 * 1.1) as usize;
     }
