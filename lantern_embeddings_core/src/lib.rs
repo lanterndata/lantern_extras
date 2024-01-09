@@ -343,7 +343,6 @@ impl EncoderService {
             }
         }
 
-        let token_size = vecs[0].len() / text_len;
         let input_chunks = self.chunk_session_input(vecs, text_len)?;
         let embeddings = input_chunks
             .iter()
