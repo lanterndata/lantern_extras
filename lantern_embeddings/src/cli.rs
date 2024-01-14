@@ -1,4 +1,5 @@
 use clap::Parser;
+pub use lantern_embeddings_core::core::Runtime;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -43,9 +44,13 @@ pub struct EmbeddingArgs {
     #[arg(short, long)]
     pub batch_size: Option<usize>,
 
-    /// Data path
-    #[arg(short, long)]
-    pub data_path: Option<String>,
+    /// Runtime
+    #[arg(long, default_value_t = Runtime::Ort)]
+    pub runtime: Runtime,
+
+    /// Runtime Params JSON string
+    #[arg(long, default_value = "{}")]
+    pub runtime_params: String,
 
     /// If model is visual
     #[arg(long, default_value_t = false)]
@@ -88,6 +93,13 @@ pub struct ShowModelsArgs {
     /// Data path
     #[arg(short, long)]
     pub data_path: Option<String>,
+    /// Runtime
+    #[arg(long, default_value_t = Runtime::Ort)]
+    pub runtime: Runtime,
+
+    /// Runtime Params JSON string
+    #[arg(long, default_value = "{}")]
+    pub runtime_params: String,
 }
 
 #[derive(Parser, Debug)]

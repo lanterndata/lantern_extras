@@ -28,7 +28,7 @@ use crate::types::{
 };
 use futures::future;
 use itertools::Itertools;
-use lantern_embeddings::cli::EmbeddingArgs;
+use lantern_embeddings::cli::{EmbeddingArgs, Runtime};
 use lantern_logger::Logger;
 use lantern_utils::{get_full_table_name, quote_ident};
 use std::collections::HashMap;
@@ -91,6 +91,9 @@ async fn embedding_worker(
     let schema = Arc::new(schema);
     let table = Arc::new(table);
     let jobs_table_name = Arc::new(get_full_table_name(&schema, &table));
+    let ort_runtime_params = format!(
+        "{{ \"data_path\": \"{data_path}\" }}",
+    );
 
     tokio::spawn(async move {
         logger.info("Embedding worker started");
@@ -99,7 +102,7 @@ async fn embedding_worker(
             let client_ref = client.clone();
             let client_ref2 = client.clone();
             let logger_ref = logger.clone();
-            let data_path = data_path.clone();
+            let runtime_params = ort_runtime_params.clone();
             let job = Arc::new(job);
             let job_ref = job.clone();
             let jobs_table_name_r1 = jobs_table_name.clone();
@@ -151,7 +154,8 @@ async fn embedding_worker(
                             column: job_clone.column.clone(),
                             out_column: job_clone.out_column.clone(),
                             batch_size: job_clone.batch_size,
-                            data_path: Some(data_path),
+                            runtime: Runtime::Ort,
+                            runtime_params,
                             visual: false,
                             stream: true,
                             create_column: false,
