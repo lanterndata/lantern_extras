@@ -1,6 +1,6 @@
 use std::str::FromStr;
 
-use crate::{ort_runtime::OrtRuntime, runtime::EmbeddingRuntime};
+use crate::{openai_runtime::OpenAiRuntime, ort_runtime::OrtRuntime, runtime::EmbeddingRuntime};
 
 fn default_logger(text: &str) {
     println!("{}", text);
@@ -9,6 +9,7 @@ fn default_logger(text: &str) {
 #[derive(Debug, PartialEq, Clone)]
 pub enum Runtime {
     Ort,
+    OpenAi,
 }
 
 pub type LoggerFn = fn(&str);
@@ -17,6 +18,7 @@ impl FromStr for Runtime {
     fn from_str(input: &str) -> Result<Runtime, anyhow::Error> {
         match input {
             "ort" => Ok(Runtime::Ort),
+            "openai" => Ok(Runtime::OpenAi),
             _ => anyhow::bail!("Invalid runtime {input}"),
         }
     }
@@ -26,6 +28,7 @@ impl ToString for Runtime {
     fn to_string(&self) -> String {
         match self {
             Runtime::Ort => "ort".to_owned(),
+            Runtime::OpenAi => "openai".to_owned(),
         }
     }
 }
@@ -35,11 +38,16 @@ pub fn get_runtime<'a>(
     logger: Option<&'a LoggerFn>,
     params: &'a str,
 ) -> Result<Box<dyn EmbeddingRuntime + 'a>, anyhow::Error> {
-    let embedding_runtime = match runtime {
-        Runtime::Ort => OrtRuntime::new(logger.unwrap_or(&(default_logger as LoggerFn)), params),
-    };
-
-    Ok(Box::new(embedding_runtime?))
+    Ok(match runtime {
+        Runtime::Ort => Box::new(OrtRuntime::new(
+            logger.unwrap_or(&(default_logger as LoggerFn)),
+            params,
+        )?),
+        Runtime::OpenAi => Box::new(OpenAiRuntime::new(
+            logger.unwrap_or(&(default_logger as LoggerFn)),
+            params,
+        )?),
+    })
 }
 
 pub fn get_available_runtimes() -> Vec<String> {

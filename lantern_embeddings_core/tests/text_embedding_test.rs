@@ -17,7 +17,7 @@ macro_rules! text_embedding_test {
     $(
         #[test]
         fn $name() {
-            let runtime = get_runtime(&Runtime::Ort, None, "{\"data_path\": \"/tmp/lantern-embeddings-core-test\"}").unwrap();
+            let runtime = get_runtime(&Runtime::Ort, None, r#"{"data_path": "/tmp/lantern-embeddings-core-test"}"#).unwrap();
             let (model, input, expected, batch_size) = $value;
             let inputs = itertools::repeat_n(input, batch_size).collect();
             let output = runtime.process(

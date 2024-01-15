@@ -92,7 +92,7 @@ async fn embedding_worker(
     let table = Arc::new(table);
     let jobs_table_name = Arc::new(get_full_table_name(&schema, &table));
     let ort_runtime_params = format!(
-        "{{ \"data_path\": \"{data_path}\" }}",
+        r#"{{ "data_path": "{data_path}" }}"#,
     );
 
     tokio::spawn(async move {

@@ -96,7 +96,7 @@ pub fn start_speed_test(args: &MeasureModelSpeedArgs, logger: Option<Logger>) ->
     )?;
 
     let runtime_params = format!(
-        "{{ \"data_path\": {} }}",
+        r#"{{ "data_path": {} }}"#,
         args.data_path.as_deref().unwrap_or("null")
     );
     let runtime = get_runtime(&Runtime::Ort, None, &runtime_params)?;
