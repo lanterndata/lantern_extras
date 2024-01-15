@@ -416,6 +416,7 @@ fn get_default_batch_size(model: &str) -> usize {
         "microsoft/all-MiniLM-L12-v2" => 1000,
         "microsoft/all-mpnet-base-v2" => 400,
         "transformers/multi-qa-mpnet-base-dot-v1" => 300,
+        "text-embedding-ada-002" => 30,
         _ => 100,
     }
 }

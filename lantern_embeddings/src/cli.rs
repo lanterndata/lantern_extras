@@ -105,10 +105,6 @@ pub struct ShowModelsArgs {
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 pub struct MeasureModelSpeedArgs {
-    /// Data path
-    #[arg(short, long)]
-    pub data_path: Option<String>,
-
     /// Model name (if not passed all models will be tested)
     #[arg(short, long)]
     pub model: Option<String>,
@@ -128,4 +124,12 @@ pub struct MeasureModelSpeedArgs {
     /// Maximum tokens for large text
     #[arg(long, default_value_t = 1000)]
     pub max_tokens: usize,
+
+    /// Runtime
+    #[arg(long, default_value_t = Runtime::Ort)]
+    pub runtime: Runtime,
+
+    /// Runtime Params JSON string
+    #[arg(long, default_value = "{}")]
+    pub runtime_params: String,
 }

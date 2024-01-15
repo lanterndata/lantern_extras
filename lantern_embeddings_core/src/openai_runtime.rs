@@ -184,7 +184,10 @@ impl<'a> EmbeddingRuntime for OpenAiRuntime<'a> {
         let mut res = String::new();
         let mut models = Vec::with_capacity(map.len());
         for (key, value) in &*map {
-            res.push_str(&format!("{} - sequence_len: {}, dimensions: {}\n", key, value.sequence_len, value.dimensions));
+            res.push_str(&format!(
+                "{} - sequence_len: {}, dimensions: {}\n",
+                key, value.sequence_len, value.dimensions
+            ));
             models.push((key.to_string(), false));
         }
 
