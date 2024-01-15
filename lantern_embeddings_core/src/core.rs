@@ -1,6 +1,9 @@
 use std::str::FromStr;
 
-use crate::{openai_runtime::OpenAiRuntime, cohere_runtime::CohereRuntime, ort_runtime::OrtRuntime, runtime::EmbeddingRuntime};
+use crate::{
+    cohere_runtime::CohereRuntime, openai_runtime::OpenAiRuntime, ort_runtime::OrtRuntime,
+    runtime::EmbeddingRuntime,
+};
 
 fn default_logger(text: &str) {
     println!("{}", text);
@@ -23,6 +26,13 @@ impl FromStr for Runtime {
             "cohere" => Ok(Runtime::Cohere),
             _ => anyhow::bail!("Invalid runtime {input}"),
         }
+    }
+}
+
+impl TryFrom<&str> for Runtime {
+    type Error = anyhow::Error;
+    fn try_from(value: &str) -> Result<Self, Self::Error> {
+        Self::from_str(value)
     }
 }
 
