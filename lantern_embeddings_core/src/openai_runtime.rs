@@ -7,6 +7,7 @@ use tiktoken_rs::{cl100k_base, CoreBPE};
 struct ModelInfo {
     tokenizer: CoreBPE,
     sequence_len: usize,
+    dimensions: usize,
 }
 
 #[derive(Deserialize)]
@@ -25,6 +26,7 @@ impl ModelInfo {
             "text-embedding-ada-002" => Ok(Self {
                 tokenizer: cl100k_base()?,
                 sequence_len: 8192,
+                dimensions: 1536,
             }),
             _ => anyhow::bail!("Unsupported model {model_name}"),
         }
@@ -43,6 +45,7 @@ pub struct OpenAiRuntime<'a> {
     request_timeout: u64,
     base_url: String,
     headers: Vec<(String, String)>,
+    #[allow(dead_code)]
     logger: &'a LoggerFn,
 }
 
@@ -181,7 +184,7 @@ impl<'a> EmbeddingRuntime for OpenAiRuntime<'a> {
         let mut res = String::new();
         let mut models = Vec::with_capacity(map.len());
         for (key, value) in &*map {
-            res.push_str(&format!("{} - sequence_len: {}\n", key, value.sequence_len));
+            res.push_str(&format!("{} - sequence_len: {}, dimensions: {}\n", key, value.sequence_len, value.dimensions));
             models.push((key.to_string(), false));
         }
 
