@@ -1,4 +1,5 @@
 use std::str::FromStr;
+use strum::{EnumIter, IntoEnumIterator};
 
 use crate::{
     cohere_runtime::CohereRuntime, openai_runtime::OpenAiRuntime, ort_runtime::OrtRuntime,
@@ -9,7 +10,7 @@ fn default_logger(text: &str) {
     println!("{}", text);
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, EnumIter)]
 pub enum Runtime {
     Ort,
     OpenAi,
@@ -68,5 +69,5 @@ pub fn get_runtime<'a>(
 }
 
 pub fn get_available_runtimes() -> Vec<String> {
-    todo!();
+    Runtime::iter().map(|e| e.to_string()).collect()
 }

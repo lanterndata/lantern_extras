@@ -103,6 +103,13 @@ fn get_available_models<'a>(runtime: default!(&'a str, "'ort'")) -> Result<Strin
     return Ok(runtime.get_available_models().0);
 }
 
+#[pg_extern(immutable, parallel_safe, create_or_replace)]
+fn get_available_runtimes() -> Result<String, anyhow::Error> {
+    let mut runtimes_str = lantern_embeddings_core::core::get_available_runtimes().join("\n");
+    runtimes_str.push_str("\n");
+    return Ok(runtimes_str);
+}
+
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 pub mod tests {

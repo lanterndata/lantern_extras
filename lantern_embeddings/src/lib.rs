@@ -1,5 +1,5 @@
 use csv::Writer;
-use lantern_embeddings_core::core::get_runtime;
+use lantern_embeddings_core::core::{get_available_runtimes, get_runtime};
 use lantern_logger::{LogLevel, Logger};
 use lantern_utils::{append_params_to_uri, get_full_table_name, quote_ident};
 use rand::Rng;
@@ -518,5 +518,14 @@ pub fn show_available_models(
     logger.info("Available Models\n");
     let runtime = get_runtime(&args.runtime, None, &args.runtime_params)?;
     logger.print_raw(&runtime.get_available_models().0);
+    Ok(())
+}
+
+pub fn show_available_runtimes(logger: Option<Logger>) -> AnyhowVoidResult {
+    let logger = logger.unwrap_or(Logger::new("Lantern Embeddings", LogLevel::Info));
+    let mut runtimes_str = get_available_runtimes().join("\n");
+    runtimes_str.push_str("\n");
+    logger.info("Available Runtimes\n");
+    logger.print_raw(&runtimes_str);
     Ok(())
 }
