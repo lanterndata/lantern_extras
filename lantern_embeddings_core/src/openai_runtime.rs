@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use crate::{core::LoggerFn, runtime::EmbeddingRuntime, HTTPRuntime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tiktoken_rs::{cl100k_base, CoreBPE};
 
 struct ModelInfo {
@@ -49,9 +49,9 @@ pub struct OpenAiRuntime<'a> {
     logger: &'a LoggerFn,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct OpenAiRuntimeParams {
-    api_token: Option<String>,
+    pub api_token: Option<String>,
 }
 
 impl<'a> OpenAiRuntime<'a> {

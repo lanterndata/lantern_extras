@@ -1,7 +1,7 @@
 use std::{collections::HashMap, sync::RwLock};
 
 use crate::{core::LoggerFn, runtime::EmbeddingRuntime, HTTPRuntime};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 struct ModelInfo {
     sequence_len: usize,
@@ -61,6 +61,10 @@ lazy_static! {
                 ModelInfo::new("embed-multilingual-v3.0").unwrap()
             ),
             (
+                "embed-multilingual-light-v3.0",
+                ModelInfo::new("embed-multilingual-light-v3.0").unwrap()
+            ),
+            (
                 "embed-english-light-v3.0",
                 ModelInfo::new("embed-english-light-v3.0").unwrap()
             ),
@@ -89,10 +93,10 @@ pub struct CohereRuntime<'a> {
     logger: &'a LoggerFn,
 }
 
-#[derive(Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct CohereRuntimeParams {
-    api_token: Option<String>,
-    input_type: Option<String>,
+    pub api_token: Option<String>,
+    pub input_type: Option<String>,
 }
 
 impl<'a> CohereRuntime<'a> {
@@ -108,7 +112,9 @@ impl<'a> CohereRuntime<'a> {
             logger,
             request_timeout: 120,
             max_batch_size: 96,
-            input_type: runtime_params.input_type.unwrap_or("search_document".to_owned()),
+            input_type: runtime_params
+                .input_type
+                .unwrap_or("search_document".to_owned()),
             headers: vec![
                 ("Content-Type".to_owned(), "application/json".to_owned()),
                 (
@@ -118,7 +124,6 @@ impl<'a> CohereRuntime<'a> {
             ],
         })
     }
-
 
     fn chunk_inputs(
         &self,
