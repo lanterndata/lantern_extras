@@ -298,6 +298,7 @@ fn db_exporter_worker(
         let mut start = Instant::now();
         let mut collected_row_cnt = 0;
         let mut processed_row_cnt = 0;
+        let mut old_progress = 0;
 
         while let Ok(rows) = rx.recv() {
             for row in &rows {
@@ -315,7 +316,8 @@ fn db_exporter_worker(
             processed_row_cnt += rows.len();
             let progress = calculate_progress(item_count, processed_row_cnt);
 
-            if progress > 0 {
+            if progress > old_progress {
+                old_progress = progress;
                 logger.debug(&format!("Progress {progress}%",));
                 if progress_cb.is_some() {
                     let cb = progress_cb.as_ref().unwrap();
