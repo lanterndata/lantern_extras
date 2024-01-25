@@ -196,7 +196,7 @@ pub fn create_usearch_index(
     });
 
     let processed_cnt = Arc::new(AtomicU64::new(0));
-    for n in 0..num_cores {
+    for _ in 0..num_cores {
         // spawn thread
         let index_ref = index_arc.clone();
         let receiver = rx_arc.clone();
