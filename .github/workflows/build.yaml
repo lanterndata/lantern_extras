@@ -21,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-20.04, ubicloud-standard-2-arm]
+        os: [ubuntu-20.04, ubicloud-standard-4-arm]
         postgres: [11, 12, 13, 14, 15]
     steps:
       - uses: actions/checkout@v4

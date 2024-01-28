@@ -78,6 +78,7 @@ function setup_cargo_deps() {
 }
 
 function package_cli() {
+  source "$(dirname "$0")/get_arch_and_platform.sh"
   VERSION=$(cargo metadata --format-version 1 | jq '.packages[] | select( .name == "lantern_cli") | .version' | tr -d '"')
   PACKAGE_NAME=lantern-cli-${VERSION}-${PLATFORM}-${ARCH}
   SOURCE_DIR=$(pwd)
