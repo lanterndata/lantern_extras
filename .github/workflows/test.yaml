@@ -15,8 +15,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - postgres: 15
-            os: ubuntu-20.04
+          - postgres: [15]
+            os: [ubuntu-20.04, ubicloud-standard-2-arm]
     steps:
       - uses: actions/checkout@v3
         with:
