@@ -51,7 +51,7 @@ function setup_lantern() {
    LANTERN_VERSION=narek/storage-upgrade
     git clone --recursive https://github.com/lanterndata/lantern.git /tmp/lantern 
     pushd /tmp/lantern
-      git checkout v${LANTERN_VERSION} && \ 
+      git checkout ${LANTERN_VERSION} && \
       git submodule update --recursive && \
       mkdir build 
       pushd build
