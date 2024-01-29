@@ -48,7 +48,7 @@ function setup_postgres() {
 }
 
 function setup_lantern() {
-   LANTERN_VERSION=0.0.11
+   LANTERN_VERSION=narek/storage-upgrade
     git clone --recursive https://github.com/lanterndata/lantern.git /tmp/lantern 
     pushd /tmp/lantern
       git checkout v${LANTERN_VERSION} && \ 
