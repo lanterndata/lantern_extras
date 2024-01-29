@@ -49,8 +49,8 @@ macro_rules! text_embedding_test {
                 itertools::repeat_n(expected, batch_size).collect();
 
             for i in 0..expected_output.len() {
-                let similarity = 1.0 - cosine_similarity(&output[i], &expected_output[i]);
-                assert!(similarity < 0.1);
+                let distance = 1.0 - cosine_similarity(&output[i], &expected_output[i]);
+                assert!(distance < 0.1);
             }
         }
     )*
