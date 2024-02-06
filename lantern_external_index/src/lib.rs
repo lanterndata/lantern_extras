@@ -115,7 +115,7 @@ pub fn create_usearch_index(
 
     transaction.execute("SET lock_timeout='5s'", &[])?;
     transaction.execute(
-        &format!("LOCK TABLE ONLY {full_table_name} IN ACCESS EXCLUSIVE MODE"),
+        &format!("LOCK TABLE ONLY {full_table_name} IN SHARE MODE"),
         &[],
     )?;
 
