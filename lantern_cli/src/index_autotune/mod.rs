@@ -6,8 +6,8 @@ use std::{
 
 use crate::external_index::cli::CreateIndexArgs;
 use crate::logger::{LogLevel, Logger};
-use crate::utils::{append_params_to_uri, get_full_table_name, quote_ident};
 use crate::types::*;
+use crate::utils::{append_params_to_uri, get_full_table_name, quote_ident};
 use postgres::{types::ToSql, Client, NoTls};
 use rand::Rng;
 
@@ -445,7 +445,6 @@ pub fn autotune_index(
                     dims: column_dims as usize,
                     index_name: Some(index_name.clone()),
                     remote_database: true,
-                    pq: false,
                 },
                 None,
                 Some(is_canceled.clone()),
@@ -531,7 +530,6 @@ pub fn autotune_index(
                 dims: column_dims as usize,
                 index_name: None,
                 remote_database: true,
-                pq: false,
             },
             None,
             Some(is_canceled.clone()),

@@ -1,3 +1,4 @@
+use cxx::UniquePtr;
 use rand::Rng;
 use std::io::BufWriter;
 use std::path::Path;
@@ -6,11 +7,10 @@ use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{mpsc, RwLock};
 use std::sync::{Arc, Mutex};
 use std::{fs, io};
-use usearch::ffi::{IndexOptions, ScalarKind};
-use usearch::Index;
+use usearch::ffi::*;
 
-use crate::types::*;
 use crate::logger::{LogLevel, Logger};
+use crate::types::*;
 use crate::utils::{get_full_table_name, quote_ident};
 use postgres::{Client, NoTls, Row};
 use postgres_large_objects::LargeObject;
@@ -59,22 +59,33 @@ impl<'a> FromSql<'a> for Tid {
     }
 }
 
-fn index_chunk(rows: Vec<Row>, index: Arc<ThreadSafeIndex>) -> AnyhowVoidResult {
+fn index_chunk(
+    rows: Vec<Row>,
+    thread_n: usize,
+    index: Arc<ThreadSafeIndex>,
+    logger: Arc<Logger>,
+) -> AnyhowVoidResult {
+    let row_count = rows.len();
+
     for row in rows {
         let ctid: Tid = row.get(0);
         let vec: Vec<f32> = row.get(1);
-        index.add(ctid.label, &vec)?;
+        index.add_in_thread(ctid.label, &vec, thread_n)?;
     }
+    logger.debug(&format!(
+        "{} items added to index from thread {}",
+        row_count, thread_n
+    ));
     Ok(())
 }
 
 struct ThreadSafeIndex {
-    inner: Index,
+    inner: UniquePtr<usearch::ffi::Index>,
 }
 
 impl ThreadSafeIndex {
-    fn add(&self, label: u64, data: &[f32]) -> AnyhowVoidResult {
-        self.inner.add(label, data)?;
+    fn add_in_thread(&self, label: u64, data: &Vec<f32>, thread: usize) -> AnyhowVoidResult {
+        self.inner.add_in_thread(label, data, thread)?;
         Ok(())
     }
     fn save(&self, path: &str) -> AnyhowVoidResult {
@@ -138,91 +149,15 @@ pub fn create_usearch_index(
         dimensions, args.m, args.ef, args.efc
     ));
 
-    let mut pq_codebook: *const f32 = std::ptr::null();
-    let mut v: Vec<f32> = vec![];
-    let mut num_centroids: usize = 0;
-    let mut num_subvectors: usize = 0;
-
-    if args.pq {
-        let codebook_table_name = format!(
-            "pq_{table_name}_{column_name}",
-            table_name = &args.table,
-            column_name = &args.column
-        );
-        let full_codebook_table_name =
-            get_full_table_name("_lantern_internal", &codebook_table_name);
-
-        let rows_codebook_exists = transaction.query("SELECT true FROM information_schema.tables WHERE table_schema='_lantern_internal' AND table_name=$1;", &[&codebook_table_name])?;
-
-        if rows_codebook_exists.len() == 0 {
-            anyhow::bail!("Codebook table {full_codebook_table_name} does not exist");
-        }
-
-        let rows_c = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE subvector_id = 0;"),
-            &[],
-        )?;
-        let rows_sv = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE centroid_id = 0;"),
-            &[],
-        )?;
-
-        if rows_c.len() == 0 || rows_sv.len() == 0 {
-            anyhow::bail!("Invalid codebook table");
-        }
-
-        num_centroids = rows_c.first().unwrap().get::<usize, i64>(0) as usize;
-        num_subvectors = rows_sv.first().unwrap().get::<usize, i64>(0) as usize;
-
-        v.resize(num_centroids * dimensions, 0.);
-
-        let rows = transaction.query(
-            &format!("SELECT subvector_id, centroid_id, c FROM {full_codebook_table_name};",),
-            &[],
-        )?;
-
-        logger.info(&format!(
-            "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
-            rows.len()
-        ));
-
-        for r in rows {
-            let subvector_id: i32 = r.get(0);
-            let centroid_id: i32 = r.get(1);
-            let subvector: Vec<f32> = r.get(2);
-            for i in 0..subvector.len() {
-                v[centroid_id as usize * dimensions
-                    + subvector_id as usize * subvector.len()
-                    + i] = subvector[i];
-            }
-        }
-        pq_codebook = v.as_ptr();
-    }
-
     let options = IndexOptions {
         dimensions,
         metric: args.metric_kind.value(),
         quantization: ScalarKind::F32,
-        multi: false,
         connectivity: args.m,
         expansion_add: args.efc,
         expansion_search: args.ef,
-
-        num_threads: 0, // automatic
-
-        // note: pq_construction and pq_output distinction is not yet implemented in usearch
-        // in the future, if pq_construction is false, we will use full vectors in memory (and
-        // require large memory for construction) but will output pq-quantized graph
-        //
-        // currently, regardless of pq_construction value, as long as pq_output is true,
-        // we construct a pq_quantized index using quantized values during construction
-        pq_construction: args.pq,
-        pq_output: args.pq,
-        num_centroids,
-        num_subvectors,
-        codebook: pq_codebook,
     };
-    let index = Index::new(&options)?;
+    let index = new_index(&options)?;
 
     let rows = transaction.query(
         &format!(
@@ -267,9 +202,10 @@ pub fn create_usearch_index(
     });
 
     let processed_cnt = Arc::new(AtomicU64::new(0));
-    for _ in 0..num_cores {
+    for n in 0..num_cores {
         // spawn thread
         let index_ref = index_arc.clone();
+        let logger_ref = logger.clone();
         let receiver = rx_arc.clone();
         let is_canceled = is_canceled.clone();
         let progress_tx = progress_tx.clone();
@@ -301,7 +237,7 @@ pub fn create_usearch_index(
 
                 let rows = rows.unwrap();
                 let rows_cnt = rows.len();
-                index_chunk(rows, index_ref.clone())?;
+                index_chunk(rows, n, index_ref.clone(), logger_ref.clone())?;
                 let all_count = processed_cnt.fetch_add(rows_cnt as u64, Ordering::SeqCst);
                 let mut progress = (all_count as f64 / count as f64 * 100.0) as u8;
                 if should_create_index {
@@ -388,7 +324,6 @@ pub fn create_usearch_index(
                 args.efc,
                 dimensions,
                 args.m,
-                args.pq,
             )?;
         } else {
             // If job is run on the same server as database we can skip copying part
@@ -403,8 +338,8 @@ pub fn create_usearch_index(
             }
 
             transaction.execute(
-            &format!("CREATE INDEX {idx_name} ON {table_name} USING lantern_hnsw({column_name} {op_class}) WITH (_experimental_index_path='{index_path}', pq={pq}, ef={ef}, dim={dim}, m={m}, ef_construction={ef_construction});", index_path=args.out, table_name=&get_full_table_name(&args.schema, &args.table),
-            column_name=&quote_ident(&args.column), pq=args.pq, m=args.m, ef=args.ef, ef_construction=args.efc, dim=dimensions),
+            &format!("CREATE INDEX {idx_name} ON {table_name} USING hnsw({column_name} {op_class}) WITH (_experimental_index_path='{index_path}', ef={ef}, dim={dim}, m={m}, ef_construction={ef_construction});", index_path=args.out, table_name=&get_full_table_name(&args.schema, &args.table),
+            column_name=&quote_ident(&args.column), m=args.m, ef=args.ef, ef_construction=args.efc, dim=dimensions),
             &[],
             )?;
 

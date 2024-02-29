@@ -1,6 +1,6 @@
 [package]
 name = "lantern_cli"
-version = "0.1.2"
+version = "0.0.40"
 edition = "2021"
 
 [[bin]]
@@ -40,4 +40,5 @@ strum = { version = "0.25", features = ["derive"] }
 tiktoken-rs = "0.5.8"
 regex = "1.10.3"
 postgres-types = { version = "0.2.6", features = ["derive"] }
-usearch = { git = "https://github.com/Ngalstyan4/usearch.git", branch="main-lantern" }
+usearch = { git = "https://github.com/Ngalstyan4/usearch.git", branch="pg-rebase" }
+cxx = "1.0.118"

@@ -69,7 +69,7 @@ impl UMetricKind {
     pub fn value(&self) -> MetricKind {
         match self {
             UMetricKind::L2sq => {
-                return MetricKind::L2sq;
+                return MetricKind::L2Sq;
             }
             UMetricKind::Cos => {
                 return MetricKind::Cos;
@@ -112,10 +112,6 @@ pub struct CreateIndexArgs {
     /// Column name
     #[arg(short, long)]
     pub column: String,
-
-    /// Use already created codebook to create product-quantized binary index
-    #[arg(short, long, default_value_t = false)]
-    pub pq: bool,
 
     /// Number of neighbours for each vector
     #[arg(short, default_value_t = 16)]
