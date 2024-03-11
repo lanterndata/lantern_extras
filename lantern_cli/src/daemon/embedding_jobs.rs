@@ -33,7 +33,7 @@ use futures::future;
 use itertools::Itertools;
 use crate::embeddings::cli::EmbeddingArgs;
 use crate::logger::Logger;
-use crate::utils::get_full_table_name;
+use crate::utils::{get_full_table_name, quote_ident};
 use tokio_postgres::types::ToSql;
 use std::collections::HashMap;
 use std::path::Path;
@@ -176,7 +176,7 @@ async fn embedding_worker(
 
             // Enable triggers for job
             if job.is_init {
-              toggle_client_job(job.id.clone(), job.db_uri.clone(), job.column.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), true ).await?;
+              toggle_client_job(job.id.clone(), job.db_uri.clone(), job.column.clone(), job.out_column.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), true ).await?;
             }
 
             let task_handle = tokio::spawn(async move {
@@ -241,7 +241,7 @@ async fn embedding_worker(
                     if job.is_init {
                         // update failure reason
                         client_ref.execute(&format!("UPDATE {jobs_table_name} SET init_failed_at=NOW(), updated_at=NOW(), init_failure_reason=$1 WHERE id=$2"), &[&e.to_string(), &job.id]).await?;
-                        toggle_client_job(job.id.clone(), job.db_uri.clone(), job.column.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), false).await?;
+                        toggle_client_job(job.id.clone(), job.db_uri.clone(), job.column.clone(), job.out_column.clone(), job.table.clone(), job.schema.clone(), logger.level.clone(), Some(notifications_tx.clone()), false).await?;
                     }
                 }
             }
@@ -496,7 +496,7 @@ async fn job_update_processor(
             }
 
             if init_finished_at.is_some() {
-              toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
+              toggle_client_job(id, row.get::<&str, String>("db_uri").to_owned(), row.get::<&str, String>("column").to_owned(), row.get::<&str, String>("dst_column").to_owned(), row.get::<&str, String>("table").to_owned(), row.get::<&str, String>("schema").to_owned(), logger.level.clone(), Some(job_insert_queue_tx.clone()), canceled_at.is_none()).await?;
             } else if canceled_at.is_some() {
                 // Cancel ongoing job
                 let jobs = JOBS.read().await;
@@ -516,7 +516,7 @@ async fn job_update_processor(
             if canceled_at.is_none() && notification.generate_missing {
                 // this will be on startup to generate embeddings for rows that might be inserted
                 // while daemon is offline
-                job_insert_queue_tx.send(JobInsertNotification { id, init: init_finished_at.is_none(), generate_missing: true, filter: Some(format!("\"{src_column}\" IS NOT NULL AND \"{out_column}\" IS NULL")), limit: None, row_id: None }).await?;
+                job_insert_queue_tx.send(JobInsertNotification { id, init: init_finished_at.is_none(), generate_missing: true, filter: Some(format!("({src_column} IS NOT NULL OR {src_column} != '') AND {out_column} IS NULL", src_column=quote_ident(&src_column), out_column=quote_ident(&out_column))), limit: None, row_id: None }).await?;
             }
         }
         Ok(()) as AnyhowVoidResult

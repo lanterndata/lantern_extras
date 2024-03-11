@@ -28,6 +28,7 @@ pub async fn toggle_client_job(
     job_id: i32,
     db_uri: String,
     column: String,
+    out_column: String,
     table: String,
     schema: String,
     log_level: LogLevel,
@@ -45,6 +46,7 @@ pub async fn toggle_client_job(
                 job_id,
                 db_uri,
                 column,
+                out_column,
                 table,
                 schema,
                 job_insert_queue_tx,
@@ -245,6 +247,7 @@ async fn start_client_job(
     job_id: i32,
     db_uri: String,
     column: String,
+    out_column: String,
     table: String,
     schema: String,
     job_insert_queue_tx: Sender<JobInsertNotification>,
@@ -344,7 +347,11 @@ async fn start_client_job(
                                 init: false,
                                 generate_missing: true,
                                 row_id: None,
-                                filter: None,
+                                filter: Some(format!(
+                                    "({src_column} IS NOT NULL OR {src_column} != '') AND {out_column} IS NULL",
+                                    src_column=quote_ident(&column),
+                                    out_column=quote_ident(&out_column),
+                                )),
                                 limit: None,
                             })
                             .await?;
