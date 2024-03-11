@@ -194,6 +194,7 @@ async fn client_notification_listener(
                 let _ = job_signal_tx.send(Signal::Restart).await;
                 break;
             }
+            logger.debug("Received message");
 
             let message = message.unwrap();
 

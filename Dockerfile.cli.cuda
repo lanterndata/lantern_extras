@@ -9,7 +9,7 @@ RUN rm -rf lantern_extras && sed -i -e 's/"lantern_extras",//' Cargo.toml
 # Build your program for release
 RUN apt update && \
   apt install -y --no-install-recommends wget build-essential pkg-config clang curl libssl-dev && \
-  cargo build --release --package lantern_cli
+  RUSTFLAGS="--cfg tokio_unstable" cargo build --release --package lantern_cli
 
 FROM nvcr.io/nvidia/cuda:12.3.1-runtime-ubuntu22.04
 COPY --from=build /app/target/release/lantern-cli .
