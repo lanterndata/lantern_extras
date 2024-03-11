@@ -1,9 +1,10 @@
+use crate::types::PoolClient;
 use crate::{logger::LogLevel, types::AnyhowVoidResult};
 use actix_web::{
     error::ErrorInternalServerError, middleware::Logger, web, App, HttpServer, Result,
 };
 use cli::HttpServerArgs;
-use deadpool_postgres::{Config as PoolConfig, Manager, Pool};
+use deadpool_postgres::{Config as PoolConfig, Pool};
 use tokio_postgres::NoTls;
 use utoipa::OpenApi;
 use utoipa_swagger_ui::SwaggerUi;
@@ -14,8 +15,6 @@ mod index;
 mod pq;
 mod search;
 mod setup;
-
-type PoolClient = deadpool::managed::Object<Manager>;
 
 pub const COLLECTION_TABLE_NAME: &str = "_lantern_internal.http_collections";
 

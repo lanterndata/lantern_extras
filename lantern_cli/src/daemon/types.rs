@@ -24,7 +24,7 @@ pub struct EmbeddingJob {
 }
 
 impl EmbeddingJob {
-    pub fn new(row: Row, data_path: &str) -> Result<EmbeddingJob, anyhow::Error> {
+    pub fn new(row: &Row, data_path: &str) -> Result<EmbeddingJob, anyhow::Error> {
         let runtime = Runtime::try_from(row.get::<&str, Option<&str>>("runtime").unwrap_or("ort"))?;
         let runtime_params = if runtime == Runtime::Ort {
             format!(r#"{{ "data_path": "{data_path}" }}"#)

@@ -338,6 +338,16 @@ async fn start_client_job(
 
                     if let Ok(tx) = res {
                         cancel_listener_task = tx;
+                        job_insert_queue_tx
+                            .send(JobInsertNotification {
+                                id: job_id,
+                                init: false,
+                                generate_missing: true,
+                                row_id: None,
+                                filter: None,
+                                limit: None,
+                            })
+                            .await?;
                         break;
                     } else {
                         tokio::time::sleep(Duration::from_secs(10)).await;

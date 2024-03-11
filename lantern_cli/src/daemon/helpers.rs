@@ -1,8 +1,8 @@
 use super::types::JobTaskCancelTx;
 use super::types::{JobCancellationHandlersMap, JobInsertNotification, JobUpdateNotification};
 use crate::logger::Logger;
-use crate::utils::{get_full_table_name, quote_ident};
 use crate::types::AnyhowVoidResult;
+use crate::utils::{get_full_table_name, quote_ident};
 use futures::StreamExt;
 use std::sync::Arc;
 use std::time::SystemTime;
