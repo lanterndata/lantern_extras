@@ -9,12 +9,18 @@ RUN rm -rf lantern_extras && sed -i -e 's/"lantern_extras",//' Cargo.toml
 # Build your program for release
 RUN apt update && \
   apt install -y --no-install-recommends wget build-essential pkg-config clang curl libssl-dev && \
-  RUSTFLAGS="--cfg tokio_unstable" cargo build --release --package lantern_cli
+  RUSTFLAGS="--cfg tokio_unstable" cargo build --package lantern_cli
 
 FROM nvcr.io/nvidia/cuda:12.3.1-runtime-ubuntu22.04
-COPY --from=build /app/target/release/lantern-cli .
+COPY --from=build /app/target/debug/lantern-cli .
 RUN apt update && \
-  apt install -y wget && apt clean
+  apt install -y wget build-essential curl && apt clean
+
+RUN curl -k -o /tmp/rustup.sh https://sh.rustup.rs && \
+    chmod +x /tmp/rustup.sh && \
+    /tmp/rustup.sh -y && \
+    . "$HOME/.cargo/env" && \
+    cargo install --locked tokio-console
 # Download onnxruntime
 RUN mkdir -p /usr/local/lib && \
     cd /usr/local/lib && \

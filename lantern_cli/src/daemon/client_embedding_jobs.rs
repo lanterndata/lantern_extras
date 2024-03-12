@@ -7,7 +7,7 @@ use futures::StreamExt;
 use std::collections::HashMap;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::RwLock;
 use tokio::sync::{
     mpsc,
@@ -181,10 +181,20 @@ async fn client_notification_listener(
 
     logger.info("Listening for notifications");
 
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH)?.as_millis();
+    let since_the_epoch_copy = since_the_epoch.clone();
+
+    let poll_logger = logger.clone();
     let client_ref = client.clone();
     let task = tokio::spawn(async move {
         // Poll messages from connection and forward it to stream
-        let mut stream = futures::stream::poll_fn(move |cx| connection.poll_message(cx));
+        let mut stream = futures::stream::poll_fn(move |cx| {
+            poll_logger.debug(&format!(
+                "Task is active and polling, uuid: {since_the_epoch_copy}"
+            ));
+            connection.poll_message(cx)
+        });
         while let Some(message) = stream.next().await {
             if let Err(e) = &message {
                 logger.error(&format!(
@@ -194,7 +204,7 @@ async fn client_notification_listener(
                 let _ = job_signal_tx.send(Signal::Restart).await;
                 break;
             }
-            logger.debug("Received message");
+            logger.debug(&format!("Received message task uuid: {since_the_epoch}"));
 
             let message = message.unwrap();
 
@@ -223,6 +233,9 @@ async fn client_notification_listener(
                 }
             }
         }
+        logger.debug(&format!(
+            "Client stream finished task uuid: {since_the_epoch}"
+        ));
         drop(client_ref);
     });
 

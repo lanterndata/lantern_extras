@@ -557,8 +557,8 @@ async fn create_data_path(logger: Arc<Logger>) -> &'static str {
 
 #[tokio::main]
 pub async fn start(args: cli::DaemonArgs, logger: Arc<Logger>) -> AnyhowVoidResult {
-    logger.info("Starting Embedding Jobs");
     console_subscriber::init();
+    logger.info("Starting Embedding Jobs");
 
     let (main_db_client, connection) = tokio_postgres::connect(&args.uri, NoTls).await?;
     tokio::spawn(async move { connection.await.unwrap() });
