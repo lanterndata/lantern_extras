@@ -186,12 +186,13 @@ async fn client_notification_listener(
     let since_the_epoch_copy = since_the_epoch.clone();
 
     let poll_logger = logger.clone();
+    let test_logger = logger.clone();
     let client_ref = client.clone();
     let task = tokio::spawn(async move {
         // Poll messages from connection and forward it to stream
         let mut stream = futures::stream::poll_fn(move |cx| {
             poll_logger.debug(&format!(
-                "Task is active and polling, uuid: {since_the_epoch_copy}"
+                "Task is active and polling, uuid: {since_the_epoch_copy}",
             ));
             connection.poll_message(cx)
         });
@@ -201,14 +202,15 @@ async fn client_notification_listener(
                 poll_res = stream.next() => {
                     Some(poll_res)
                 },
-                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                _ = tokio::time::sleep(Duration::from_secs(30)) => {
                     None
                 }
             };
 
             if res.is_none() {
                 logger.debug(&format!(
-                    "Polling again after 10 secs uuid {since_the_epoch}"
+                    "Polling again after 30 secs uuid {since_the_epoch}, client is_closed: {}",
+                    client_ref.is_closed()
                 ));
                 continue;
             }
@@ -274,6 +276,22 @@ async fn client_notification_listener(
     // Task cancellation handler
     let (tx, mut rx): (Sender<()>, Receiver<()>) = mpsc::channel(1);
 
+    tokio::spawn(async move {
+        loop {
+            match client.query_one("SELECT 1", &[]).await {
+                Ok(row) => {
+                    test_logger.debug(&format!(
+                        "Test query result is: {}",
+                        row.get::<usize, i32>(0)
+                    ));
+                }
+                Err(e) => {
+                    test_logger.error(&format!("Test query failed with {e}"));
+                }
+            };
+            tokio::time::sleep(Duration::from_secs(30)).await;
+        }
+    });
     tokio::spawn(async move {
         while let Some(_) = rx.recv().await {
             task.abort();
