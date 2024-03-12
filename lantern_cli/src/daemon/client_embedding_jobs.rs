@@ -195,41 +195,69 @@ async fn client_notification_listener(
             ));
             connection.poll_message(cx)
         });
-        while let Some(message) = stream.next().await {
-            if let Err(e) = &message {
-                logger.error(&format!(
-                    "Error receiving message from DB: {}",
-                    &e.to_string()
-                ));
-                let _ = job_signal_tx.send(Signal::Restart).await;
-                break;
-            }
-            logger.debug(&format!("Received message task uuid: {since_the_epoch}"));
-
-            let message = message.unwrap();
-
-            if let AsyncMessage::Notification(not) = message {
-                let parts: Vec<&str> = not.payload().split(':').collect();
-
-                if parts.len() < 2 {
-                    logger.error(&format!("Invalid notification received {}", not.payload()));
-                    continue;
+        loop {
+            logger.debug(&format!("Calling stream next: uuid {since_the_epoch}"));
+            let res = tokio::select! {
+                poll_res = stream.next() => {
+                    Some(poll_res)
+                },
+                _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                    None
                 }
-                let pk: &str = parts[0];
-                let job_id = i32::from_str_radix(parts[1], 10).unwrap();
-                let result = job_insert_queue_tx
-                    .send(JobInsertNotification {
-                        id: job_id,
-                        init: false,
-                        generate_missing: false,
-                        row_id: Some(pk.to_owned()),
-                        filter: None,
-                        limit: None,
-                    })
-                    .await;
+            };
 
-                if let Err(e) = result {
-                    logger.error(&e.to_string());
+            if res.is_none() {
+                logger.debug(&format!(
+                    "Polling again after 10 secs uuid {since_the_epoch}"
+                ));
+                continue;
+            }
+
+            let poll_res = res.unwrap();
+            logger.debug(&format!("Called stream next: uuid {since_the_epoch}"));
+
+            match poll_res {
+                Some(message) => {
+                    if let Err(e) = &message {
+                        logger.error(&format!(
+                            "Error receiving message from DB: {}",
+                            &e.to_string()
+                        ));
+                        let _ = job_signal_tx.send(Signal::Restart).await;
+                        break;
+                    }
+                    logger.debug(&format!("Received message task uuid: {since_the_epoch}"));
+
+                    let message = message.unwrap();
+
+                    if let AsyncMessage::Notification(not) = message {
+                        let parts: Vec<&str> = not.payload().split(':').collect();
+
+                        if parts.len() < 2 {
+                            logger
+                                .error(&format!("Invalid notification received {}", not.payload()));
+                            continue;
+                        }
+                        let pk: &str = parts[0];
+                        let job_id = i32::from_str_radix(parts[1], 10).unwrap();
+                        let result = job_insert_queue_tx
+                            .send(JobInsertNotification {
+                                id: job_id,
+                                init: false,
+                                generate_missing: false,
+                                row_id: Some(pk.to_owned()),
+                                filter: None,
+                                limit: None,
+                            })
+                            .await;
+
+                        if let Err(e) = result {
+                            logger.error(&e.to_string());
+                        }
+                    }
+                }
+                None => {
+                    logger.debug(&format!("Poll received none, uuid: {since_the_epoch}"));
                 }
             }
         }
