@@ -64,6 +64,7 @@ fn producer_worker(
         };
 
         let uri = append_params_to_uri(&args.uri, CONNECTION_PARAMS);
+        logger.debug("Connecting to client");
         let client = Client::connect(&uri, NoTls);
 
         // we are excplicity checking for error here
@@ -72,8 +73,11 @@ fn producer_worker(
         // if before updating the variable there will be error the while
         // loop will never exit
 
+        logger.debug("Connected to client");
         if let Err(e) = client {
+            logger.debug(&format!("Connection to client errored {e}"));
             item_count_r1.store(0, Ordering::SeqCst);
+            logger.debug(&format!("Atomic updated"));
             anyhow::bail!("{e}");
         }
         let mut client = client.unwrap();
@@ -81,13 +85,16 @@ fn producer_worker(
         let mut transaction = client.transaction()?;
 
         if estimate_count {
+            logger.debug("Estimating count");
             let rows = transaction.query(
                 &format!("SELECT COUNT(*) FROM {full_table_name} {filter_sql} {limit_sql};"),
                 &[],
             );
 
             if let Err(e) = rows {
+                logger.debug(&format!("Count query errored {e}"));
                 item_count_r1.store(0, Ordering::SeqCst);
+                logger.debug(&format!("Atomic updated"));
                 anyhow::bail!("{e}");
             }
 
@@ -95,6 +102,7 @@ fn producer_worker(
 
             let count: i64 = rows[0].get(0);
             item_count_r1.store(count, Ordering::SeqCst);
+            logger.debug(&format!("Atomic updated with count"));
             if count > 0 {
                 logger.info(&format!(
                     "Found approximately {} items in table \"{}\"",
@@ -103,8 +111,10 @@ fn producer_worker(
             }
         } else {
             item_count_r1.store(0, Ordering::SeqCst);
+            logger.debug(&format!("Atomic updated without count"));
         }
 
+        logger.debug(&format!("Start polling rows from portal"));
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction.bind(
             &format!(
