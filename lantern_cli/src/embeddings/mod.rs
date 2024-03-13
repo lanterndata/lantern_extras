@@ -43,6 +43,7 @@ fn producer_worker(
 ) -> Result<(JoinHandle<AnyhowVoidResult>, i64), anyhow::Error> {
     let item_count = Arc::new(AtomicI64::new(-1));
     let item_count_r1 = item_count.clone();
+    let logger_clone = logger.clone();
 
     let handle = std::thread::spawn(move || {
         let column = &args.column;
@@ -133,9 +134,13 @@ fn producer_worker(
     // the item count and progress anyway, so we won't lock the process waiting
     // for thread
     // Wait for the other thread to release the lock
+    logger_clone.debug("Producer worker entering spin_loop");
     while item_count.load(Ordering::SeqCst) == -1 {
         hint::spin_loop();
     }
+
+    // TODO::remove
+    logger_clone.debug("Producer worker is ready");
 
     return Ok((handle, item_count.load(Ordering::SeqCst)));
 }
@@ -159,6 +164,7 @@ fn embedding_worker(
         let mut start = Instant::now();
         let runtime = get_runtime(&args.runtime, None, &args.runtime_params)?;
 
+        logger.debug("Embedding worker waiting for rows");
         while let Ok(rows) = rx.recv() {
             if is_canceled.is_some() && *is_canceled.as_ref().unwrap().read().unwrap() {
                 // This variable will be changed from outside to gracefully
