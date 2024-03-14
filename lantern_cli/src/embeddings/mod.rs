@@ -41,9 +41,9 @@ fn producer_worker(
     estimate_count: bool,
     logger: Arc<Logger>,
 ) -> Result<(JoinHandle<AnyhowVoidResult>, i64), anyhow::Error> {
-    let item_count = Arc::new(AtomicI64::new(-1));
-    let item_count_r1 = item_count.clone();
+    let mut item_count = 0;
     let logger_clone = logger.clone();
+    let (count_tx, count_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
 
     let handle = std::thread::spawn(move || {
         let column = &args.column;
@@ -76,8 +76,8 @@ fn producer_worker(
         logger.debug("Connected to client");
         if let Err(e) = client {
             logger.debug(&format!("Connection to client errored {e}"));
-            item_count_r1.store(0, Ordering::SeqCst);
-            logger.debug(&format!("Atomic updated"));
+            count_tx.send(0)?;
+            logger.debug(&format!("Count sent via channel from error"));
             anyhow::bail!("{e}");
         }
         let mut client = client.unwrap();
@@ -93,7 +93,7 @@ fn producer_worker(
 
             if let Err(e) = rows {
                 logger.debug(&format!("Count query errored {e}"));
-                item_count_r1.store(0, Ordering::SeqCst);
+                count_tx.send(0)?;
                 logger.debug(&format!("Atomic updated"));
                 anyhow::bail!("{e}");
             }
@@ -101,8 +101,8 @@ fn producer_worker(
             let rows = rows.unwrap();
 
             let count: i64 = rows[0].get(0);
-            item_count_r1.store(count, Ordering::SeqCst);
-            logger.debug(&format!("Atomic updated with count"));
+            count_tx.send(count)?;
+            logger.debug(&format!("Count sent via channel from estimate"));
             if count > 0 {
                 logger.info(&format!(
                     "Found approximately {} items in table \"{}\"",
@@ -110,8 +110,8 @@ fn producer_worker(
                 ));
             }
         } else {
-            item_count_r1.store(0, Ordering::SeqCst);
-            logger.debug(&format!("Atomic updated without count"));
+            count_tx.send(0)?;
+            logger.debug(&format!("Count sent via channel"));
         }
 
         logger.debug(&format!("Start polling rows from portal"));
@@ -144,15 +144,17 @@ fn producer_worker(
     // the item count and progress anyway, so we won't lock the process waiting
     // for thread
     // Wait for the other thread to release the lock
-    logger_clone.debug("Producer worker entering spin_loop");
-    while item_count.load(Ordering::SeqCst) == -1 {
-        hint::spin_loop();
+    logger_clone.debug("Waiting for count_rx.recv()");
+    while let Ok(count) = count_rx.recv() {
+        item_count = count;
+        logger_clone.debug(&format!("Count received in count_rx.recv() {item_count}"));
+        break;
     }
 
     // TODO::remove
     logger_clone.debug("Producer worker is ready");
 
-    return Ok((handle, item_count.load(Ordering::SeqCst)));
+    return Ok((handle, item_count));
 }
 
 // Embedding worker will listen to the producer channel
