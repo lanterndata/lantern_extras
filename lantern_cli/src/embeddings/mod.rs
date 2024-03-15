@@ -4,9 +4,7 @@ use crate::utils::{append_params_to_uri, get_full_table_name, quote_ident};
 use core::{get_available_runtimes, get_runtime};
 use csv::Writer;
 use rand::Rng;
-use std::hint;
 use std::io::Write;
-use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{mpsc, Arc, RwLock};
 use std::thread::JoinHandle;
@@ -42,7 +40,6 @@ fn producer_worker(
     logger: Arc<Logger>,
 ) -> Result<(JoinHandle<AnyhowVoidResult>, i64), anyhow::Error> {
     let mut item_count = 0;
-    let logger_clone = logger.clone();
     let (count_tx, count_rx): (Sender<i64>, Receiver<i64>) = mpsc::channel();
 
     let handle = std::thread::spawn(move || {
@@ -64,7 +61,6 @@ fn producer_worker(
         };
 
         let uri = append_params_to_uri(&args.uri, CONNECTION_PARAMS);
-        logger.debug("Connecting to client");
         let client = Client::connect(&uri, NoTls);
 
         // we are excplicity checking for error here
@@ -73,11 +69,8 @@ fn producer_worker(
         // if before updating the variable there will be error the while
         // loop will never exit
 
-        logger.debug("Connected to client");
         if let Err(e) = client {
-            logger.debug(&format!("Connection to client errored {e}"));
             count_tx.send(0)?;
-            logger.debug(&format!("Count sent via channel from error"));
             anyhow::bail!("{e}");
         }
         let mut client = client.unwrap();
@@ -85,16 +78,13 @@ fn producer_worker(
         let mut transaction = client.transaction()?;
 
         if estimate_count {
-            logger.debug("Estimating count");
             let rows = transaction.query(
                 &format!("SELECT COUNT(*) FROM {full_table_name} {filter_sql} {limit_sql};"),
                 &[],
             );
 
             if let Err(e) = rows {
-                logger.debug(&format!("Count query errored {e}"));
                 count_tx.send(0)?;
-                logger.debug(&format!("Atomic updated"));
                 anyhow::bail!("{e}");
             }
 
@@ -102,7 +92,6 @@ fn producer_worker(
 
             let count: i64 = rows[0].get(0);
             count_tx.send(count)?;
-            logger.debug(&format!("Count sent via channel from estimate"));
             if count > 0 {
                 logger.info(&format!(
                     "Found approximately {} items in table \"{}\"",
@@ -111,10 +100,8 @@ fn producer_worker(
             }
         } else {
             count_tx.send(0)?;
-            logger.debug(&format!("Count sent via channel"));
         }
 
-        logger.debug(&format!("Start polling rows from portal"));
         // With portal we can execute a query and poll values from it in chunks
         let portal = transaction.bind(
             &format!(
@@ -144,15 +131,10 @@ fn producer_worker(
     // the item count and progress anyway, so we won't lock the process waiting
     // for thread
     // Wait for the other thread to release the lock
-    logger_clone.debug("Waiting for count_rx.recv()");
     while let Ok(count) = count_rx.recv() {
         item_count = count;
-        logger_clone.debug(&format!("Count received in count_rx.recv() {item_count}"));
         break;
     }
-
-    // TODO::remove
-    logger_clone.debug("Producer worker is ready");
 
     return Ok((handle, item_count));
 }
@@ -176,7 +158,6 @@ fn embedding_worker(
         let mut start = Instant::now();
         let runtime = get_runtime(&args.runtime, None, &args.runtime_params)?;
 
-        logger.debug("Embedding worker waiting for rows");
         while let Ok(rows) = rx.recv() {
             if is_canceled.is_some() && *is_canceled.as_ref().unwrap().read().unwrap() {
                 // This variable will be changed from outside to gracefully
