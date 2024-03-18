@@ -5,15 +5,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{mpsc, RwLock};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{fs, io};
-use usearch::ffi::{IndexOptions, ScalarKind};
+pub use usearch::ffi::{IndexOptions, ScalarKind};
 use usearch::Index;
 
 use crate::logger::{LogLevel, Logger};
 use crate::types::*;
 use crate::utils::{get_full_table_name, quote_ident};
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, NoTls};
 use postgres_large_objects::LargeObject;
 use postgres_types::FromSql;
 
@@ -23,6 +24,8 @@ pub mod utils;
 
 // Used to control chunk size when copying index file to postgres server
 static COPY_BUFFER_CHUNK_SIZE: usize = 1024 * 1024 * 10; // 10MB
+
+type IndexItem = (u64, Vec<f32>);
 
 #[derive(Debug)]
 struct Tid {
@@ -60,16 +63,7 @@ impl<'a> FromSql<'a> for Tid {
     }
 }
 
-fn index_chunk(rows: Vec<Row>, index: Arc<ThreadSafeIndex>) -> AnyhowVoidResult {
-    for row in rows {
-        let ctid: Tid = row.get(0);
-        let vec: Vec<f32> = row.get(1);
-        index.add(ctid.label, &vec)?;
-    }
-    Ok(())
-}
-
-struct ThreadSafeIndex {
+pub struct ThreadSafeIndex {
     inner: Index,
 }
 
@@ -78,7 +72,7 @@ impl ThreadSafeIndex {
         self.inner.add(label, data)?;
         Ok(())
     }
-    fn save(&self, path: &str) -> AnyhowVoidResult {
+    pub fn save(&self, path: &str) -> AnyhowVoidResult {
         self.inner.save(path)?;
         Ok(())
     }
@@ -86,6 +80,13 @@ impl ThreadSafeIndex {
 
 unsafe impl Sync for ThreadSafeIndex {}
 unsafe impl Send for ThreadSafeIndex {}
+
+fn index_chunk(rows: Vec<IndexItem>, index: Arc<ThreadSafeIndex>) -> AnyhowVoidResult {
+    for row in rows {
+        index.add(row.0, &row.1)?;
+    }
+    Ok(())
+}
 
 fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress: u8) {
     logger.info(&format!("Progress {progress}%"));
@@ -95,6 +96,111 @@ fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress
     }
 }
 
+pub fn create_index_from_stream(
+    logger: Arc<Logger>,
+    is_canceled: Option<Arc<RwLock<bool>>>,
+    progress_cb: Option<ProgressCbFn>,
+    should_create_index: bool,
+    options: &IndexOptions,
+    row_count: usize,
+) -> Result<
+    (
+        SyncSender<Vec<IndexItem>>,
+        Sender<u8>,
+        Arc<ThreadSafeIndex>,
+        Vec<JoinHandle<AnyhowVoidResult>>,
+    ),
+    anyhow::Error,
+> {
+    let mut handles = vec![];
+    let num_cores: usize = std::thread::available_parallelism().unwrap().into();
+    logger.info(&format!("Number of available CPU cores: {}", num_cores));
+    let is_canceled = is_canceled.unwrap_or(Arc::new(RwLock::new(false)));
+    let (progress_tx, progress_rx): (Sender<u8>, Receiver<u8>) = mpsc::channel();
+    let (tx, rx): (SyncSender<Vec<IndexItem>>, Receiver<Vec<IndexItem>>) =
+        mpsc::sync_channel(num_cores);
+    let rx_arc = Arc::new(Mutex::new(rx));
+    let progress_logger = logger.clone();
+    let index = Index::new(options)?;
+    // reserve enough memory on index
+    index.reserve(row_count)?;
+    let thread_safe_index = ThreadSafeIndex { inner: index };
+
+    logger.info(&format!("Items to index {}", row_count));
+
+    let index_arc = Arc::new(thread_safe_index);
+
+    std::thread::spawn(move || -> AnyhowVoidResult {
+        let mut prev_progress = 0;
+        for progress in progress_rx {
+            if progress == prev_progress {
+                continue;
+            }
+            prev_progress = progress;
+            report_progress(&progress_cb, &progress_logger, progress);
+
+            if progress == 100 {
+                break;
+            }
+        }
+        Ok(())
+    });
+
+    let processed_cnt = Arc::new(AtomicU64::new(0));
+    for _ in 0..num_cores {
+        // spawn thread
+        let index_ref = index_arc.clone();
+        let receiver = rx_arc.clone();
+        let is_canceled = is_canceled.clone();
+        let progress_tx = progress_tx.clone();
+        let processed_cnt = processed_cnt.clone();
+
+        let handle = std::thread::spawn(move || -> AnyhowVoidResult {
+            loop {
+                let lock = receiver.lock();
+
+                if let Err(e) = lock {
+                    anyhow::bail!("{e}");
+                }
+
+                let rx = lock.unwrap();
+                let rows = rx.recv();
+                // release the lock so other threads can take rows
+                drop(rx);
+
+                if rows.is_err() {
+                    // channel has been closed
+                    break;
+                }
+
+                if *is_canceled.read().unwrap() {
+                    // This variable will be changed from outside to gracefully
+                    // exit job on next chunk
+                    anyhow::bail!(JOB_CANCELLED_MESSAGE);
+                }
+
+                let rows = rows.unwrap();
+                let rows_cnt = rows.len();
+                index_chunk(rows, index_ref.clone())?;
+                let all_count = processed_cnt.fetch_add(rows_cnt as u64, Ordering::SeqCst);
+                let mut progress = (all_count as f64 / row_count as f64 * 100.0) as u8;
+                if should_create_index {
+                    // reserve 20% progress for index import
+                    progress = if progress > 20 { progress - 20 } else { 0 };
+                }
+
+                if progress > 0 {
+                    progress_tx.send(progress)?;
+                }
+            }
+            Ok(())
+        });
+        handles.push(handle);
+    }
+
+    Ok((tx, progress_tx, index_arc, handles))
+}
+
 pub fn create_usearch_index(
     args: &cli::CreateIndexArgs,
     progress_cb: Option<ProgressCbFn>,
@@ -102,9 +208,7 @@ pub fn create_usearch_index(
     logger: Option<Logger>,
 ) -> Result<(), anyhow::Error> {
     let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug)));
-    let num_cores: usize = std::thread::available_parallelism().unwrap().into();
     let total_start_time = Instant::now();
-    logger.info(&format!("Number of available CPU cores: {}", num_cores));
 
     // get all row count
     let mut client = Client::connect(&args.uri, NoTls)?;
@@ -224,9 +328,10 @@ pub fn create_usearch_index(
         num_subvectors,
         codebook: pq_codebook,
     };
-    let index = Index::new(&options)?;
 
+    let should_create_index = args.import;
     let start_time = Instant::now();
+
     let rows = transaction.query(
         &format!(
             "SELECT COUNT(*) FROM {full_table_name} WHERE {} IS NOT NULL;",
@@ -241,92 +346,27 @@ pub fn create_usearch_index(
 
     let start_time = Instant::now();
     let count: i64 = rows[0].get(0);
-    // reserve enough memory on index
-    index.reserve(count as usize)?;
-    let thread_safe_index = ThreadSafeIndex { inner: index };
 
-    logger.info(&format!("Items to index {}", count));
-
-    let index_arc = Arc::new(thread_safe_index);
+    // =================== TODO:::::: This part should be separated in a function and called from
+    // extension
 
     // Create a vector to store thread handles
-    let mut handles = vec![];
 
-    let (tx, rx): (SyncSender<Vec<Row>>, Receiver<Vec<Row>>) = mpsc::sync_channel(num_cores);
-    let rx_arc = Arc::new(Mutex::new(rx));
+    // TODOO: ===================================================
+
+    // TODO::::::::::::: The above function should return index, handles and tx
+    // We should poll rows send to via tx and join handles
+    // After done index can be saved
+    let (tx, progress_tx, index_arc, handles) = create_index_from_stream(
+        logger.clone(),
+        is_canceled.clone(),
+        progress_cb,
+        should_create_index,
+        &options,
+        count as usize,
+    )?;
+
     let is_canceled = is_canceled.unwrap_or(Arc::new(RwLock::new(false)));
-    let (progress_tx, progress_rx): (Sender<u8>, Receiver<u8>) = mpsc::channel();
-    let progress_logger = logger.clone();
-    let should_create_index = args.import;
-
-    std::thread::spawn(move || -> AnyhowVoidResult {
-        let mut prev_progress = 0;
-        for progress in progress_rx {
-            if progress == prev_progress {
-                continue;
-            }
-            prev_progress = progress;
-            report_progress(&progress_cb, &progress_logger, progress);
-
-            if progress == 100 {
-                break;
-            }
-        }
-        Ok(())
-    });
-
-    let processed_cnt = Arc::new(AtomicU64::new(0));
-    for _ in 0..num_cores {
-        // spawn thread
-        let index_ref = index_arc.clone();
-        let receiver = rx_arc.clone();
-        let is_canceled = is_canceled.clone();
-        let progress_tx = progress_tx.clone();
-        let processed_cnt = processed_cnt.clone();
-
-        let handle = std::thread::spawn(move || -> AnyhowVoidResult {
-            loop {
-                let lock = receiver.lock();
-
-                if let Err(e) = lock {
-                    anyhow::bail!("{e}");
-                }
-
-                let rx = lock.unwrap();
-                let rows = rx.recv();
-                // release the lock so other threads can take rows
-                drop(rx);
-
-                if rows.is_err() {
-                    // channel has been closed
-                    break;
-                }
-
-                if *is_canceled.read().unwrap() {
-                    // This variable will be changed from outside to gracefully
-                    // exit job on next chunk
-                    anyhow::bail!(JOB_CANCELLED_MESSAGE);
-                }
-
-                let rows = rows.unwrap();
-                let rows_cnt = rows.len();
-                index_chunk(rows, index_ref.clone())?;
-                let all_count = processed_cnt.fetch_add(rows_cnt as u64, Ordering::SeqCst);
-                let mut progress = (all_count as f64 / count as f64 * 100.0) as u8;
-                if should_create_index {
-                    // reserve 20% progress for index import
-                    progress = if progress > 20 { progress - 20 } else { 0 };
-                }
-
-                if progress > 0 {
-                    progress_tx.send(progress)?;
-                }
-            }
-            Ok(())
-        });
-        handles.push(handle);
-    }
-
     // With portal we can execute a query and poll values from it in chunks
     let portal = transaction.bind(
         &format!(
@@ -348,7 +388,11 @@ pub fn create_usearch_index(
             // exit job on next chunk
             anyhow::bail!(JOB_CANCELLED_MESSAGE);
         }
-        tx.send(rows)?;
+        tx.send(
+            rows.iter()
+                .map(|r| (r.get::<usize, Tid>(0).label, r.get::<usize, Vec<f32>>(1)))
+                .collect(),
+        )?;
     }
 
     // Exit all channels
@@ -375,7 +419,6 @@ pub fn create_usearch_index(
 
     drop(index_arc);
     drop(portal);
-    drop(rx_arc);
 
     if args.import {
         let op_class = args.metric_kind.to_ops();
