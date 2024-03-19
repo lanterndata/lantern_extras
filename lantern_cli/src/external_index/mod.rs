@@ -5,17 +5,23 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender, SyncSender};
 use std::sync::{mpsc, RwLock};
 use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::Instant;
 use std::{fs, io};
-use usearch::ffi::{IndexOptions, ScalarKind};
+pub use usearch::ffi::{IndexOptions, ScalarKind};
 use usearch::Index;
 
 use crate::logger::{LogLevel, Logger};
 use crate::types::*;
 use crate::utils::{get_full_table_name, quote_ident};
-use postgres::{Client, NoTls, Row};
+use postgres::{Client, NoTls};
 use postgres_large_objects::LargeObject;
 use postgres_types::FromSql;
+
+use self::utils::{
+    check_available_memory_for_index, get_and_validate_dimensions, get_codebook,
+    get_count_estimation_query, get_portal_query,
+};
 
 pub mod cli;
 mod postgres_large_objects;
@@ -23,6 +29,8 @@ pub mod utils;
 
 // Used to control chunk size when copying index file to postgres server
 static COPY_BUFFER_CHUNK_SIZE: usize = 1024 * 1024 * 10; // 10MB
+
+type IndexItem = (u64, Vec<f32>);
 
 #[derive(Debug)]
 struct Tid {
@@ -60,16 +68,7 @@ impl<'a> FromSql<'a> for Tid {
     }
 }
 
-fn index_chunk(rows: Vec<Row>, index: Arc<ThreadSafeIndex>) -> AnyhowVoidResult {
-    for row in rows {
-        let ctid: Tid = row.get(0);
-        let vec: Vec<f32> = row.get(1);
-        index.add(ctid.label, &vec)?;
-    }
-    Ok(())
-}
-
-struct ThreadSafeIndex {
+pub struct ThreadSafeIndex {
     inner: Index,
 }
 
@@ -78,7 +77,7 @@ impl ThreadSafeIndex {
         self.inner.add(label, data)?;
         Ok(())
     }
-    fn save(&self, path: &str) -> AnyhowVoidResult {
+    pub fn save(&self, path: &str) -> AnyhowVoidResult {
         self.inner.save(path)?;
         Ok(())
     }
@@ -86,6 +85,13 @@ impl ThreadSafeIndex {
 
 unsafe impl Sync for ThreadSafeIndex {}
 unsafe impl Send for ThreadSafeIndex {}
+
+fn index_chunk(rows: Vec<IndexItem>, index: Arc<ThreadSafeIndex>) -> AnyhowVoidResult {
+    for row in rows {
+        index.add(row.0, &row.1)?;
+    }
+    Ok(())
+}
 
 fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress: u8) {
     logger.info(&format!("Progress {progress}%"));
@@ -95,169 +101,48 @@ fn report_progress(progress_cb: &Option<ProgressCbFn>, logger: &Logger, progress
     }
 }
 
-pub fn create_usearch_index(
-    args: &cli::CreateIndexArgs,
-    progress_cb: Option<ProgressCbFn>,
+pub fn create_index_from_stream(
+    logger: Arc<Logger>,
     is_canceled: Option<Arc<RwLock<bool>>>,
-    logger: Option<Logger>,
-) -> Result<(), anyhow::Error> {
-    let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug)));
-    let num_cores: usize = std::thread::available_parallelism().unwrap().into();
-    let total_start_time = Instant::now();
-    logger.info(&format!("Number of available CPU cores: {}", num_cores));
-
-    // get all row count
-    let mut client = Client::connect(&args.uri, NoTls)?;
-    let mut transaction = client.transaction()?;
-    let full_table_name = get_full_table_name(&args.schema, &args.table);
-
-    transaction.execute("SET lock_timeout='5s'", &[])?;
-    transaction.execute(
-        &format!("LOCK TABLE ONLY {full_table_name} IN SHARE MODE"),
-        &[],
+    progress_cb: Option<ProgressCbFn>,
+    should_create_index: bool,
+    options: &IndexOptions,
+    row_count: usize,
+) -> Result<
+    (
+        SyncSender<Vec<IndexItem>>,
+        Sender<u8>,
+        Arc<ThreadSafeIndex>,
+        Vec<JoinHandle<AnyhowVoidResult>>,
+    ),
+    anyhow::Error,
+> {
+    check_available_memory_for_index(
+        row_count,
+        options.connectivity,
+        options.dimensions,
+        options.pq_construction,
+        options.num_centroids,
+        options.num_threads,
     )?;
 
-    let rows = transaction.query(&format!("SELECT ARRAY_LENGTH({col}, 1) as dim FROM {full_table_name} WHERE {col} IS NOT NULL LIMIT 1",col=quote_ident(&args.column)), &[])?;
-
-    if rows.len() == 0 {
-        anyhow::bail!("Cannot create an external index on empty table");
-    }
-
-    let row = rows.first().unwrap();
-    let infered_dimensions = row.try_get::<usize, i32>(0)? as usize;
-
-    if args.dims != 0 && infered_dimensions != args.dims {
-        // I didn't complitely remove the dimensions from args
-        // To have extra validation when reindexing external index
-        // This is invariant and should never be a case
-        anyhow::bail!("Infered dimensions ({infered_dimensions}) does not match with the provided dimensions ({dims})", dims=args.dims);
-    }
-
-    let dimensions = infered_dimensions;
-
-    logger.info(&format!(
-        "Creating index with parameters dimensions={} m={} ef={} ef_construction={}",
-        dimensions, args.m, args.ef, args.efc
-    ));
-
-    let mut pq_codebook: *const f32 = std::ptr::null();
-    let mut v: Vec<f32> = vec![];
-    let mut num_centroids: usize = 0;
-    let mut num_subvectors: usize = 0;
-
-    if args.pq {
-        let codebook_table_name = format!(
-            "pq_{table_name}_{column_name}",
-            table_name = &args.table,
-            column_name = &args.column
-        );
-        let full_codebook_table_name =
-            get_full_table_name("_lantern_internal", &codebook_table_name);
-
-        let rows_codebook_exists = transaction.query("SELECT true FROM information_schema.tables WHERE table_schema='_lantern_internal' AND table_name=$1;", &[&codebook_table_name])?;
-
-        if rows_codebook_exists.len() == 0 {
-            anyhow::bail!("Codebook table {full_codebook_table_name} does not exist");
-        }
-
-        let rows_c = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE subvector_id = 0;"),
-            &[],
-        )?;
-        let rows_sv = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE centroid_id = 0;"),
-            &[],
-        )?;
-
-        if rows_c.len() == 0 || rows_sv.len() == 0 {
-            anyhow::bail!("Invalid codebook table");
-        }
-
-        num_centroids = rows_c.first().unwrap().get::<usize, i64>(0) as usize;
-        num_subvectors = rows_sv.first().unwrap().get::<usize, i64>(0) as usize;
-
-        v.resize(num_centroids * dimensions, 0.);
-
-        let rows = transaction.query(
-            &format!("SELECT subvector_id, centroid_id, c FROM {full_codebook_table_name};",),
-            &[],
-        )?;
-
-        logger.info(&format!(
-            "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
-            rows.len()
-        ));
-
-        for r in rows {
-            let subvector_id: i32 = r.get(0);
-            let centroid_id: i32 = r.get(1);
-            let subvector: Vec<f32> = r.get(2);
-            for i in 0..subvector.len() {
-                v[centroid_id as usize * dimensions
-                    + subvector_id as usize * subvector.len()
-                    + i] = subvector[i];
-            }
-        }
-        pq_codebook = v.as_ptr();
-    }
-
-    let options = IndexOptions {
-        dimensions,
-        metric: args.metric_kind.value(),
-        quantization: ScalarKind::F32,
-        multi: false,
-        connectivity: args.m,
-        expansion_add: args.efc,
-        expansion_search: args.ef,
-
-        num_threads: 0, // automatic
-
-        // note: pq_construction and pq_output distinction is not yet implemented in usearch
-        // in the future, if pq_construction is false, we will use full vectors in memory (and
-        // require large memory for construction) but will output pq-quantized graph
-        //
-        // currently, regardless of pq_construction value, as long as pq_output is true,
-        // we construct a pq_quantized index using quantized values during construction
-        pq_construction: args.pq,
-        pq_output: args.pq,
-        num_centroids,
-        num_subvectors,
-        codebook: pq_codebook,
-    };
-    let index = Index::new(&options)?;
-
-    let start_time = Instant::now();
-    let rows = transaction.query(
-        &format!(
-            "SELECT COUNT(*) FROM {full_table_name} WHERE {} IS NOT NULL;",
-            quote_ident(&args.column)
-        ),
-        &[],
-    )?;
-    logger.debug(&format!(
-        "Count estimation took {}s",
-        start_time.elapsed().as_secs()
-    ));
-
-    let start_time = Instant::now();
-    let count: i64 = rows[0].get(0);
-    // reserve enough memory on index
-    index.reserve(count as usize)?;
-    let thread_safe_index = ThreadSafeIndex { inner: index };
-
-    logger.info(&format!("Items to index {}", count));
-
-    let index_arc = Arc::new(thread_safe_index);
-
-    // Create a vector to store thread handles
     let mut handles = vec![];
-
-    let (tx, rx): (SyncSender<Vec<Row>>, Receiver<Vec<Row>>) = mpsc::sync_channel(num_cores);
-    let rx_arc = Arc::new(Mutex::new(rx));
+    let num_cores: usize = std::thread::available_parallelism().unwrap().into();
+    logger.info(&format!("Number of available CPU cores: {}", num_cores));
     let is_canceled = is_canceled.unwrap_or(Arc::new(RwLock::new(false)));
     let (progress_tx, progress_rx): (Sender<u8>, Receiver<u8>) = mpsc::channel();
+    let (tx, rx): (SyncSender<Vec<IndexItem>>, Receiver<Vec<IndexItem>>) =
+        mpsc::sync_channel(num_cores);
+    let rx_arc = Arc::new(Mutex::new(rx));
     let progress_logger = logger.clone();
-    let should_create_index = args.import;
+    let index = Index::new(options)?;
+    // reserve enough memory on index
+    index.reserve(row_count)?;
+    let thread_safe_index = ThreadSafeIndex { inner: index };
+
+    logger.info(&format!("Items to index {}", row_count));
+
+    let index_arc = Arc::new(thread_safe_index);
 
     std::thread::spawn(move || -> AnyhowVoidResult {
         let mut prev_progress = 0;
@@ -312,7 +197,7 @@ pub fn create_usearch_index(
                 let rows_cnt = rows.len();
                 index_chunk(rows, index_ref.clone())?;
                 let all_count = processed_cnt.fetch_add(rows_cnt as u64, Ordering::SeqCst);
-                let mut progress = (all_count as f64 / count as f64 * 100.0) as u8;
+                let mut progress = (all_count as f64 / row_count as f64 * 100.0) as u8;
                 if should_create_index {
                     // reserve 20% progress for index import
                     progress = if progress > 20 { progress - 20 } else { 0 };
@@ -327,15 +212,109 @@ pub fn create_usearch_index(
         handles.push(handle);
     }
 
-    // With portal we can execute a query and poll values from it in chunks
-    let portal = transaction.bind(
-        &format!(
-            "SELECT ctid, {col} FROM {table} WHERE {col} IS NOT NULL;",
-            col = quote_ident(&args.column),
-            table = get_full_table_name(&args.schema, &args.table)
-        ),
+    Ok((tx, progress_tx, index_arc, handles))
+}
+
+pub fn create_usearch_index(
+    args: &cli::CreateIndexArgs,
+    progress_cb: Option<ProgressCbFn>,
+    is_canceled: Option<Arc<RwLock<bool>>>,
+    logger: Option<Logger>,
+) -> Result<(), anyhow::Error> {
+    let logger = Arc::new(logger.unwrap_or(Logger::new("Lantern Index", LogLevel::Debug)));
+    let total_start_time = Instant::now();
+
+    // get all row count
+    let mut client = Client::connect(&args.uri, NoTls)?;
+    let mut transaction = client.transaction()?;
+    let full_table_name = get_full_table_name(&args.schema, &args.table);
+
+    transaction.execute("SET lock_timeout='5s'", &[])?;
+    transaction.execute(
+        &format!("LOCK TABLE ONLY {full_table_name} IN SHARE MODE"),
         &[],
     )?;
+
+    let dimensions =
+        get_and_validate_dimensions(&full_table_name, &args.column, args.dims, &mut transaction)?;
+
+    logger.info(&format!(
+        "Creating index with parameters dimensions={} m={} ef={} ef_construction={}",
+        dimensions, args.m, args.ef, args.efc
+    ));
+
+    let mut pq_codebook: *const f32 = std::ptr::null();
+    let v: Vec<f32>;
+    let mut num_centroids: usize = 0;
+    let mut num_subvectors: usize = 0;
+
+    if args.pq {
+        let (codebook_vector, count_c, count_sv) =
+            get_codebook(&args.table, &args.column, dimensions, &mut transaction)?;
+        v = codebook_vector;
+        num_centroids = count_c;
+        num_subvectors = count_sv;
+
+        logger.info(&format!(
+            "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
+            v.len()
+        ));
+
+        pq_codebook = v.as_ptr();
+    }
+
+    let options = IndexOptions {
+        dimensions,
+        metric: args.metric_kind.value(),
+        quantization: ScalarKind::F32,
+        multi: false,
+        connectivity: args.m,
+        expansion_add: args.efc,
+        expansion_search: args.ef,
+
+        num_threads: 0, // automatic
+
+        // note: pq_construction and pq_output distinction is not yet implemented in usearch
+        // in the future, if pq_construction is false, we will use full vectors in memory (and
+        // require large memory for construction) but will output pq-quantized graph
+        //
+        // currently, regardless of pq_construction value, as long as pq_output is true,
+        // we construct a pq_quantized index using quantized values during construction
+        pq_construction: args.pq,
+        pq_output: args.pq,
+        num_centroids,
+        num_subvectors,
+        codebook: pq_codebook,
+    };
+
+    let should_create_index = args.import;
+    let start_time = Instant::now();
+
+    let rows = transaction.query(
+        &get_count_estimation_query(&full_table_name, &args.column),
+        &[],
+    )?;
+
+    logger.debug(&format!(
+        "Count estimation took {}s",
+        start_time.elapsed().as_secs()
+    ));
+
+    let start_time = Instant::now();
+    let count: i64 = rows[0].get(0);
+
+    let (tx, progress_tx, index_arc, handles) = create_index_from_stream(
+        logger.clone(),
+        is_canceled.clone(),
+        progress_cb,
+        should_create_index,
+        &options,
+        count as usize,
+    )?;
+
+    let is_canceled = is_canceled.unwrap_or(Arc::new(RwLock::new(false)));
+    // With portal we can execute a query and poll values from it in chunks
+    let portal = transaction.bind(&get_portal_query(&full_table_name, &args.column), &[])?;
 
     loop {
         // poll 2000 rows from portal and send it to worker threads via channel
@@ -348,7 +327,11 @@ pub fn create_usearch_index(
             // exit job on next chunk
             anyhow::bail!(JOB_CANCELLED_MESSAGE);
         }
-        tx.send(rows)?;
+        tx.send(
+            rows.iter()
+                .map(|r| (r.get::<usize, Tid>(0).label, r.get::<usize, Vec<f32>>(1)))
+                .collect(),
+        )?;
     }
 
     // Exit all channels
@@ -361,6 +344,7 @@ pub fn create_usearch_index(
             anyhow::bail!("{:?}", e);
         }
     }
+
     logger.debug(&format!(
         "Indexing took {}s",
         start_time.elapsed().as_secs()
@@ -375,7 +359,6 @@ pub fn create_usearch_index(
 
     drop(index_arc);
     drop(portal);
-    drop(rx_arc);
 
     if args.import {
         let op_class = args.metric_kind.to_ops();
