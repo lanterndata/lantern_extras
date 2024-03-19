@@ -18,6 +18,8 @@ use postgres::{Client, NoTls};
 use postgres_large_objects::LargeObject;
 use postgres_types::FromSql;
 
+use self::utils::check_available_memory_for_index;
+
 pub mod cli;
 mod postgres_large_objects;
 pub mod utils;
@@ -112,6 +114,15 @@ pub fn create_index_from_stream(
     ),
     anyhow::Error,
 > {
+    check_available_memory_for_index(
+        row_count,
+        options.connectivity,
+        options.dimensions,
+        options.pq_construction,
+        options.num_centroids,
+        options.num_threads,
+    )?;
+
     let mut handles = vec![];
     let num_cores: usize = std::thread::available_parallelism().unwrap().into();
     logger.info(&format!("Number of available CPU cores: {}", num_cores));
@@ -347,16 +358,6 @@ pub fn create_usearch_index(
     let start_time = Instant::now();
     let count: i64 = rows[0].get(0);
 
-    // =================== TODO:::::: This part should be separated in a function and called from
-    // extension
-
-    // Create a vector to store thread handles
-
-    // TODOO: ===================================================
-
-    // TODO::::::::::::: The above function should return index, handles and tx
-    // We should poll rows send to via tx and join handles
-    // After done index can be saved
     let (tx, progress_tx, index_arc, handles) = create_index_from_stream(
         logger.clone(),
         is_canceled.clone(),
@@ -405,6 +406,7 @@ pub fn create_usearch_index(
             anyhow::bail!("{:?}", e);
         }
     }
+
     logger.debug(&format!(
         "Indexing took {}s",
         start_time.elapsed().as_secs()

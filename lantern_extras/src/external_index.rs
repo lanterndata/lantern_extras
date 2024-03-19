@@ -180,24 +180,19 @@ mod lantern_extras {
     fn _create_external_index<'a>(
         column: &'a str,
         table: &'a str,
-        schema: default!(&'a str, "'public'"),
-        metric_kind: default!(&'a str, "'l2sq'"),
-        dim: default!(i32, 0),
-        m: default!(i32, 16),
-        ef_construction: default!(i32, 16),
-        ef: default!(i32, 16),
-        pq: default!(bool, false),
+        schema: &'a str,
+        metric_kind: &'a str,
+        dim: i32,
+        m: i32,
+        ef_construction: i32,
+        ef: i32,
+        pq: bool,
     ) -> Result<String, anyhow::Error> {
-        // TODO:::::
-        // Refactor code
-        // Add pq part
-        // Merge similart logic with cli index
-        // Add interrupt listener to cancel indexing
-        //
         let index_path = Spi::connect(|client| {
-            let dim = dim as usize;
             let full_table_name = get_full_table_name(schema, table);
             let logger = Arc::new(Logger::new("Lantern Index", LogLevel::Debug));
+
+            let dim = dim as usize;
             let rows = client.select(&format!("SELECT ARRAY_LENGTH({col}, 1) as dim FROM {full_table_name} WHERE {col} IS NOT NULL",col=quote_ident(column)), Some(1), None)?;
 
             if rows.len() == 0 {
@@ -212,10 +207,82 @@ mod lantern_extras {
                 anyhow::bail!("Infered dimensions ({dimensions}) does not match with the provided dimensions ({dim})");
             }
 
+            if dimensions == 0 {
+                anyhow::bail!("Column does not have dimensions");
+            }
+
+            notice!(
+                "Creating index with parameters metric={metric_kind} dimensions={dimensions} m={m} ef={ef} ef_construction={ef_construction} pq={pq}",
+            );
+
+            let mut pq_codebook: *const f32 = std::ptr::null();
+            let mut v: Vec<f32> = vec![];
+            let mut num_centroids: usize = 0;
+            let mut num_subvectors: usize = 0;
+
+            if pq {
+                let codebook_table_name = format!("pq_{table}_{column}",);
+                let full_codebook_table_name =
+                    get_full_table_name("_lantern_internal", &codebook_table_name);
+
+                let rows_codebook_exists = client.select(&format!("SELECT true FROM information_schema.tables WHERE table_schema='_lantern_internal' AND table_name='{codebook_table_name}';"), None, None)?;
+
+                if rows_codebook_exists.len() == 0 {
+                    anyhow::bail!("Codebook table {full_codebook_table_name} does not exist");
+                }
+
+                let rows_c = client.select(
+                    &format!(
+                        "SELECT COUNT(*) as cnt FROM {full_codebook_table_name} WHERE subvector_id = 0;"
+                    ),
+                    None,
+                    None,
+                )?;
+                let rows_sv = client.select(
+                    &format!(
+                        "SELECT COUNT(*) as cnt FROM {full_codebook_table_name} WHERE centroid_id = 0;"
+                    ),
+                    None,
+                    None,
+                )?;
+
+                if rows_c.len() == 0 || rows_sv.len() == 0 {
+                    anyhow::bail!("Invalid codebook table");
+                }
+
+                num_centroids = rows_c.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize;
+                num_subvectors = rows_sv.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize;
+
+                v.resize(num_centroids * dimensions, 0.);
+
+                let rows = client.select(
+                    &format!(
+                        "SELECT subvector_id, centroid_id, c FROM {full_codebook_table_name};",
+                    ),
+                    None,
+                    None,
+                )?;
+
+                notice!(
+                    "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
+                    rows.len()
+                );
+
+                for r in rows {
+                    let subvector_id: i32 = r.get_by_name("subvector_id")?.unwrap();
+                    let centroid_id: i32 = r.get_by_name("centroid_id")?.unwrap();
+                    let subvector: Vec<f32> = r.get_by_name("c")?.unwrap();
+                    for i in 0..subvector.len() {
+                        v[centroid_id as usize * dimensions
+                            + subvector_id as usize * subvector.len()
+                            + i] = subvector[i];
+                    }
+                }
+                pq_codebook = v.as_ptr();
+            }
+
             let metric = UMetricKind::from(metric_kind)?.value();
 
-            // TODO fetch pq_codebook if pq is true
-            let mut pq_codebook: *const f32 = std::ptr::null();
             let options = IndexOptions {
                 dimensions,
                 metric,
@@ -224,21 +291,14 @@ mod lantern_extras {
                 connectivity: m as usize,
                 expansion_add: ef_construction as usize,
                 expansion_search: ef as usize,
-
                 num_threads: 0, // automatic
-
-                // note: pq_construction and pq_output distinction is not yet implemented in usearch
-                // in the future, if pq_construction is false, we will use full vectors in memory (and
-                // require large memory for construction) but will output pq-quantized graph
-                //
-                // currently, regardless of pq_construction value, as long as pq_output is true,
-                // we construct a pq_quantized index using quantized values during construction
                 pq_construction: pq,
                 pq_output: pq,
-                num_centroids: 0,
-                num_subvectors: 0,
+                num_centroids,
+                num_subvectors,
                 codebook: pq_codebook,
             };
+
             let start_time = Instant::now();
 
             let rows = client.select(
@@ -250,7 +310,7 @@ mod lantern_extras {
                 None,
             )?;
             let count: i64 = rows.first().get_by_name("cnt")?.unwrap();
-            info!("Count estimation took {}s", start_time.elapsed().as_secs());
+            debug1!("Count estimation took {}s", start_time.elapsed().as_secs());
 
             let data_dir = client.select(
                 "SELECT setting::text as data_dir FROM pg_settings WHERE name = 'data_directory'",
@@ -261,23 +321,16 @@ mod lantern_extras {
             let data_dir: Option<String> = data_dir.first().get_by_name("data_dir")?;
 
             if data_dir.is_none() {
-                anyhow::bail!("Could not get data_dir");
+                anyhow::bail!("Could not get data directory");
             }
 
             let data_dir = data_dir.unwrap();
 
             let mut rng = rand::thread_rng();
             let index_path = format!("{data_dir}/ldb-index-{}.usearch", rng.gen_range(0..1000));
-            let (tx, progress_tx, index_arc, handles) = create_index_from_stream(
-                logger.clone(),
-                None,
-                None,
-                true,
-                &options,
-                count as usize,
-            )?;
+            let (tx, progress_tx, index_arc, handles) =
+                create_index_from_stream(logger, None, None, true, &options, count as usize)?;
 
-            // With portal we can execute a query and poll values from it in chunks
             let mut cursor = client.open_cursor(
                 &format!(
                     "SELECT ctid, {col} as v FROM {table} WHERE {col} IS NOT NULL;",
@@ -295,7 +348,8 @@ mod lantern_extras {
                     break;
                 }
 
-                // TODO:: check for interrupt
+                check_for_interrupts!();
+
                 tx.send(
                     rows.map(|r| {
                         let label: u64 = unsafe {
@@ -321,16 +375,16 @@ mod lantern_extras {
             // Wait for all threads to finish processing
             for handle in handles {
                 if let Err(e) = handle.join() {
-                    logger.error("{e}");
                     anyhow::bail!("{:?}", e);
                 }
             }
 
-            info!("Indexing took {}s", start_time.elapsed().as_secs());
+            debug1!("Indexing took {}s", start_time.elapsed().as_secs());
 
             index_arc.save(&index_path)?;
+            progress_tx.send(100)?;
 
-            info!("Index saved under {index_path}");
+            debug1!("Index saved under {index_path}");
 
             Ok::<String, anyhow::Error>(index_path)
         })?;
