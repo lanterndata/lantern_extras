@@ -18,7 +18,10 @@ use postgres::{Client, NoTls};
 use postgres_large_objects::LargeObject;
 use postgres_types::FromSql;
 
-use self::utils::check_available_memory_for_index;
+use self::utils::{
+    check_available_memory_for_index, get_and_validate_dimensions, get_codebook,
+    get_count_estimation_query, get_portal_query,
+};
 
 pub mod cli;
 mod postgres_large_objects;
@@ -232,23 +235,8 @@ pub fn create_usearch_index(
         &[],
     )?;
 
-    let rows = transaction.query(&format!("SELECT ARRAY_LENGTH({col}, 1) as dim FROM {full_table_name} WHERE {col} IS NOT NULL LIMIT 1",col=quote_ident(&args.column)), &[])?;
-
-    if rows.len() == 0 {
-        anyhow::bail!("Cannot create an external index on empty table");
-    }
-
-    let row = rows.first().unwrap();
-    let infered_dimensions = row.try_get::<usize, i32>(0)? as usize;
-
-    if args.dims != 0 && infered_dimensions != args.dims {
-        // I didn't complitely remove the dimensions from args
-        // To have extra validation when reindexing external index
-        // This is invariant and should never be a case
-        anyhow::bail!("Infered dimensions ({infered_dimensions}) does not match with the provided dimensions ({dims})", dims=args.dims);
-    }
-
-    let dimensions = infered_dimensions;
+    let dimensions =
+        get_and_validate_dimensions(&full_table_name, &args.column, args.dims, &mut transaction)?;
 
     logger.info(&format!(
         "Creating index with parameters dimensions={} m={} ef={} ef_construction={}",
@@ -256,63 +244,22 @@ pub fn create_usearch_index(
     ));
 
     let mut pq_codebook: *const f32 = std::ptr::null();
-    let mut v: Vec<f32> = vec![];
+    let v: Vec<f32>;
     let mut num_centroids: usize = 0;
     let mut num_subvectors: usize = 0;
 
     if args.pq {
-        let codebook_table_name = format!(
-            "pq_{table_name}_{column_name}",
-            table_name = &args.table,
-            column_name = &args.column
-        );
-        let full_codebook_table_name =
-            get_full_table_name("_lantern_internal", &codebook_table_name);
-
-        let rows_codebook_exists = transaction.query("SELECT true FROM information_schema.tables WHERE table_schema='_lantern_internal' AND table_name=$1;", &[&codebook_table_name])?;
-
-        if rows_codebook_exists.len() == 0 {
-            anyhow::bail!("Codebook table {full_codebook_table_name} does not exist");
-        }
-
-        let rows_c = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE subvector_id = 0;"),
-            &[],
-        )?;
-        let rows_sv = transaction.query(
-            &format!("SELECT COUNT(*) FROM {full_codebook_table_name} WHERE centroid_id = 0;"),
-            &[],
-        )?;
-
-        if rows_c.len() == 0 || rows_sv.len() == 0 {
-            anyhow::bail!("Invalid codebook table");
-        }
-
-        num_centroids = rows_c.first().unwrap().get::<usize, i64>(0) as usize;
-        num_subvectors = rows_sv.first().unwrap().get::<usize, i64>(0) as usize;
-
-        v.resize(num_centroids * dimensions, 0.);
-
-        let rows = transaction.query(
-            &format!("SELECT subvector_id, centroid_id, c FROM {full_codebook_table_name};",),
-            &[],
-        )?;
+        let (codebook_vector, count_c, count_sv) =
+            get_codebook(&args.table, &args.column, dimensions, &mut transaction)?;
+        v = codebook_vector;
+        num_centroids = count_c;
+        num_subvectors = count_sv;
 
         logger.info(&format!(
             "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
-            rows.len()
+            v.len()
         ));
 
-        for r in rows {
-            let subvector_id: i32 = r.get(0);
-            let centroid_id: i32 = r.get(1);
-            let subvector: Vec<f32> = r.get(2);
-            for i in 0..subvector.len() {
-                v[centroid_id as usize * dimensions
-                    + subvector_id as usize * subvector.len()
-                    + i] = subvector[i];
-            }
-        }
         pq_codebook = v.as_ptr();
     }
 
@@ -344,12 +291,10 @@ pub fn create_usearch_index(
     let start_time = Instant::now();
 
     let rows = transaction.query(
-        &format!(
-            "SELECT COUNT(*) FROM {full_table_name} WHERE {} IS NOT NULL;",
-            quote_ident(&args.column)
-        ),
+        &get_count_estimation_query(&full_table_name, &args.column),
         &[],
     )?;
+
     logger.debug(&format!(
         "Count estimation took {}s",
         start_time.elapsed().as_secs()
@@ -369,14 +314,7 @@ pub fn create_usearch_index(
 
     let is_canceled = is_canceled.unwrap_or(Arc::new(RwLock::new(false)));
     // With portal we can execute a query and poll values from it in chunks
-    let portal = transaction.bind(
-        &format!(
-            "SELECT ctid, {col} FROM {table} WHERE {col} IS NOT NULL;",
-            col = quote_ident(&args.column),
-            table = get_full_table_name(&args.schema, &args.table)
-        ),
-        &[],
-    )?;
+    let portal = transaction.bind(&get_portal_query(&full_table_name, &args.column), &[])?;
 
     loop {
         // poll 2000 rows from portal and send it to worker threads via channel

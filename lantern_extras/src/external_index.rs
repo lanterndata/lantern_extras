@@ -1,6 +1,11 @@
 use lantern_cli::external_index;
 use lantern_cli::external_index::cli::{CreateIndexArgs, UMetricKind};
+use lantern_cli::external_index::utils::{
+    get_centroid_count_query, get_codebook_data_query, get_codebook_exists_query,
+    get_infer_dims_query, get_subvector_count_query, UnifiedClient,
+};
 use pgrx::prelude::*;
+use pgrx::spi::SpiClient;
 use rand::Rng;
 
 fn validate_index_param(param_name: &str, param_val: i32, min: i32, max: i32) {
@@ -11,6 +16,69 @@ fn validate_index_param(param_name: &str, param_val: i32, min: i32, max: i32) {
 
 unsafe fn any_as_u8_slice<T: Sized>(p: &T) -> &[u8] {
     ::core::slice::from_raw_parts((p as *const T) as *const u8, ::core::mem::size_of::<T>())
+}
+
+struct LocalSpiClient<'a>(SpiClient<'a>);
+
+impl<'a> UnifiedClient<'a> for LocalSpiClient<'a> {
+    fn infer_column_dimensions(
+        &mut self,
+        full_table_name: &str,
+        column: &str,
+    ) -> Result<Option<usize>, anyhow::Error> {
+        let rows = self
+            .0
+            .select(&get_infer_dims_query(full_table_name, column), None, None)?;
+
+        if rows.len() == 0 {
+            return Ok(None);
+        }
+
+        Ok(Some(
+            rows.first().get_by_name::<i64, &str>("dim")?.unwrap() as usize
+        ))
+    }
+
+    fn codebook_exists(&mut self, table_name: &str) -> Result<bool, anyhow::Error> {
+        let rows_codebook_exists =
+            self.0
+                .select(&get_codebook_exists_query(table_name), None, None)?;
+
+        Ok(rows_codebook_exists.len() > 0)
+    }
+
+    fn get_centroid_count(&mut self, full_table_name: &str) -> Result<usize, anyhow::Error> {
+        let rows = self
+            .0
+            .select(&get_centroid_count_query(full_table_name), None, None)?;
+        Ok(rows.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize)
+    }
+
+    fn get_subvector_count(&mut self, full_table_name: &str) -> Result<usize, anyhow::Error> {
+        let rows = self
+            .0
+            .select(&get_subvector_count_query(full_table_name), None, None)?;
+        Ok(rows.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize)
+    }
+
+    fn get_codebook_data(
+        &mut self,
+        full_table_name: &str,
+    ) -> Result<Vec<(i32, i32, Vec<f32>)>, anyhow::Error> {
+        let rows = self
+            .0
+            .select(&get_codebook_data_query(full_table_name), None, None)?;
+
+        Ok(rows
+            .map(|r| {
+                (
+                    r.get_by_name("subvector_id").unwrap().unwrap(),
+                    r.get_by_name("centroid_id").unwrap().unwrap(),
+                    r.get_by_name("c").unwrap().unwrap(),
+                )
+            })
+            .collect())
+    }
 }
 
 #[pg_extern(immutable, parallel_unsafe)]
@@ -106,13 +174,19 @@ fn lantern_create_external_index<'a>(
 
 #[pg_schema]
 mod lantern_extras {
-    use super::lantern_create_external_index;
+    use super::{lantern_create_external_index, LocalSpiClient};
     use lantern_cli::{
         external_index::{
-            cli::UMetricKind, create_index_from_stream, utils, IndexOptions, ScalarKind,
+            cli::UMetricKind,
+            create_index_from_stream,
+            utils::{
+                self, get_and_validate_dimensions, get_codebook, get_count_estimation_query,
+                get_portal_query,
+            },
+            IndexOptions, ScalarKind,
         },
         logger::{LogLevel, Logger},
-        utils::{get_full_table_name, quote_ident},
+        utils::get_full_table_name,
     };
     use pgrx::pg_sys::ItemPointerData;
     use pgrx::prelude::*;
@@ -189,96 +263,37 @@ mod lantern_extras {
         pq: bool,
     ) -> Result<String, anyhow::Error> {
         let index_path = Spi::connect(|client| {
+            let mut local_client = LocalSpiClient(client);
             let full_table_name = get_full_table_name(schema, table);
             let logger = Arc::new(Logger::new("Lantern Index", LogLevel::Debug));
 
-            let dim = dim as usize;
-            let rows = client.select(&format!("SELECT ARRAY_LENGTH({col}, 1) as dim FROM {full_table_name} WHERE {col} IS NOT NULL",col=quote_ident(column)), Some(1), None)?;
-
-            if rows.len() == 0 {
-                anyhow::bail!("Cannot create an external index on empty table");
-            }
-
-            let row = rows.first();
-
-            let dimensions = row.get_by_name::<i32, &str>("dim")?.unwrap() as usize;
-
-            if dim != 0 && dimensions != dim {
-                anyhow::bail!("Infered dimensions ({dimensions}) does not match with the provided dimensions ({dim})");
-            }
-
-            if dimensions == 0 {
-                anyhow::bail!("Column does not have dimensions");
-            }
+            let dimensions = get_and_validate_dimensions(
+                &full_table_name,
+                &column,
+                dim as usize,
+                &mut local_client,
+            )?;
 
             notice!(
                 "Creating index with parameters metric={metric_kind} dimensions={dimensions} m={m} ef={ef} ef_construction={ef_construction} pq={pq}",
             );
 
             let mut pq_codebook: *const f32 = std::ptr::null();
-            let mut v: Vec<f32> = vec![];
             let mut num_centroids: usize = 0;
             let mut num_subvectors: usize = 0;
 
             if pq {
-                let codebook_table_name = format!("pq_{table}_{column}",);
-                let full_codebook_table_name =
-                    get_full_table_name("_lantern_internal", &codebook_table_name);
-
-                let rows_codebook_exists = client.select(&format!("SELECT true FROM information_schema.tables WHERE table_schema='_lantern_internal' AND table_name='{codebook_table_name}';"), None, None)?;
-
-                if rows_codebook_exists.len() == 0 {
-                    anyhow::bail!("Codebook table {full_codebook_table_name} does not exist");
-                }
-
-                let rows_c = client.select(
-                    &format!(
-                        "SELECT COUNT(*) as cnt FROM {full_codebook_table_name} WHERE subvector_id = 0;"
-                    ),
-                    None,
-                    None,
-                )?;
-                let rows_sv = client.select(
-                    &format!(
-                        "SELECT COUNT(*) as cnt FROM {full_codebook_table_name} WHERE centroid_id = 0;"
-                    ),
-                    None,
-                    None,
-                )?;
-
-                if rows_c.len() == 0 || rows_sv.len() == 0 {
-                    anyhow::bail!("Invalid codebook table");
-                }
-
-                num_centroids = rows_c.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize;
-                num_subvectors = rows_sv.first().get_by_name::<i64, &str>("cnt")?.unwrap() as usize;
-
-                v.resize(num_centroids * dimensions, 0.);
-
-                let rows = client.select(
-                    &format!(
-                        "SELECT subvector_id, centroid_id, c FROM {full_codebook_table_name};",
-                    ),
-                    None,
-                    None,
-                )?;
+                let (codebook_vector, count_c, count_sv) =
+                    get_codebook(&table, &column, dimensions, &mut local_client)?;
+                num_centroids = count_c;
+                num_subvectors = count_sv;
 
                 notice!(
                     "Codebook has {} rows - {num_centroids} centroids and {num_subvectors} subvectors",
-                    rows.len()
+                    codebook_vector.len()
                 );
 
-                for r in rows {
-                    let subvector_id: i32 = r.get_by_name("subvector_id")?.unwrap();
-                    let centroid_id: i32 = r.get_by_name("centroid_id")?.unwrap();
-                    let subvector: Vec<f32> = r.get_by_name("c")?.unwrap();
-                    for i in 0..subvector.len() {
-                        v[centroid_id as usize * dimensions
-                            + subvector_id as usize * subvector.len()
-                            + i] = subvector[i];
-                    }
-                }
-                pq_codebook = v.as_ptr();
+                pq_codebook = codebook_vector.as_ptr();
             }
 
             let metric = UMetricKind::from(metric_kind)?.value();
@@ -301,18 +316,15 @@ mod lantern_extras {
 
             let start_time = Instant::now();
 
-            let rows = client.select(
-                &format!(
-                    "SELECT COUNT(*) as cnt FROM {full_table_name} WHERE {} IS NOT NULL;",
-                    quote_ident(column)
-                ),
+            let rows = local_client.0.select(
+                &get_count_estimation_query(&full_table_name, &column),
                 None,
                 None,
             )?;
             let count: i64 = rows.first().get_by_name("cnt")?.unwrap();
             debug1!("Count estimation took {}s", start_time.elapsed().as_secs());
 
-            let data_dir = client.select(
+            let data_dir = local_client.0.select(
                 "SELECT setting::text as data_dir FROM pg_settings WHERE name = 'data_directory'",
                 None,
                 None,
@@ -331,14 +343,9 @@ mod lantern_extras {
             let (tx, progress_tx, index_arc, handles) =
                 create_index_from_stream(logger, None, None, true, &options, count as usize)?;
 
-            let mut cursor = client.open_cursor(
-                &format!(
-                    "SELECT ctid, {col} as v FROM {table} WHERE {col} IS NOT NULL;",
-                    col = quote_ident(column),
-                    table = get_full_table_name(schema, table)
-                ),
-                None,
-            );
+            let mut cursor = local_client
+                .0
+                .open_cursor(&get_portal_query(&full_table_name, &column), None);
 
             loop {
                 // poll 2000 rows from portal and send it to worker threads via channel
