@@ -3,9 +3,12 @@ use image::{imageops::FilterType, io::Reader as ImageReader, GenericImageView};
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient};
 use itertools::Itertools;
 use ndarray::{s, Array2, Array4, ArrayBase, Axis, CowArray, CowRepr, Dim, IxDynImpl};
-use ort::session::Session;
-use ort::tensor::ort_owned_tensor::ViewHolder;
-use ort::{Environment, ExecutionProvider, GraphOptimizationLevel, SessionBuilder, Value};
+use ort::CPUExecutionProvider;
+use ort::CUDAExecutionProvider;
+use ort::OpenVINOExecutionProvider;
+use ort::Session;
+use ort::ArrayViewHolder;
+use ort::{GraphOptimizationLevel, Value};
 use serde::Deserialize;
 use std::{
     cmp,
@@ -34,7 +37,7 @@ pub enum PoolingStrategy {
 
 impl PoolingStrategy {
     fn cls_pooling(
-        embeddings: ViewHolder<'_, f32, Dim<IxDynImpl>>,
+        embeddings: ArrayViewHolder<'_, f32>,
         output_dims: usize,
     ) -> Vec<Vec<f32>> {
         embeddings
@@ -48,7 +51,7 @@ impl PoolingStrategy {
     }
 
     fn mean_pooling(
-        embeddings: ViewHolder<'_, f32, Dim<IxDynImpl>>,
+        embeddings: ArrayViewHolder<'_, f32>,
         attention_mask: &SessionInput,
         output_dims: usize,
     ) -> Vec<Vec<f32>> {
@@ -81,7 +84,7 @@ impl PoolingStrategy {
 
     pub fn pool(
         &self,
-        embeddings: ViewHolder<'_, f32, Dim<IxDynImpl>>,
+        embeddings: ArrayViewHolder<'_, f32>,
         attention_mask: &SessionInput,
         output_dims: usize,
     ) -> Vec<Vec<f32>> {
@@ -263,23 +266,23 @@ lazy_static! {
 }
 
 lazy_static! {
-    static ref ONNX_ENV: Arc<Environment> = Environment::builder()
-        .with_name("ldb_extras")
-        .with_execution_providers([
-            ExecutionProvider::CUDA(Default::default()),
-            ExecutionProvider::OpenVINO(Default::default()),
-            ExecutionProvider::CPU(Default::default()),
-        ])
-        .build()
-        .unwrap()
-        .into_arc();
+    // ONNX_ENV is used to initiate ort environment once when it is first dereferenced.
+    static ref ONNX_ENV: bool = {
+        ort::init().with_name("ldb_extras")
+            .with_execution_providers([
+                CUDAExecutionProvider::default().build(),
+                OpenVINOExecutionProvider::default().build(),
+                CPUExecutionProvider::default().build(),
+            ])
+            .commit()
+            .expect("can not initiate ort environment");
+        true
+    };
 }
-
 static MEM_PERCENT_THRESHOLD: f64 = 80.0;
 
 impl EncoderService {
     pub fn new(
-        environment: &Arc<Environment>,
         model_name: &str,
         model_params: ModelParams,
         model_folder: &PathBuf,
@@ -306,7 +309,8 @@ impl EncoderService {
 
         let num_cpus = num_cpus::get();
 
-        let encoder = SessionBuilder::new(environment)?
+        let _ = &ONNX_ENV;
+        let encoder = Session::builder()?
             .with_parallel_execution(true)?
             .with_intra_threads(num_cpus as i16)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
@@ -467,17 +471,17 @@ impl EncoderService {
             .iter()
             .map(|chunk| {
                 // Iterate over each chunk and create embedding for that chunk
-                let inputs: Vec<Value<'_>> = chunk
+                let inputs: Vec<Value> = chunk
                     .iter()
-                    .map(|v| Value::from_array(session.allocator(), &v).unwrap())
+                    .map(|v| Value::from_array(v).unwrap())
                     .collect();
 
-                let outputs = session.run(inputs).unwrap();
+                let outputs = session.run(&inputs[..]).unwrap();
 
-                let binding = outputs[0].try_extract()?;
+                let binding = outputs[0].extract_tensor()?;
                 let embeddings = binding.view();
                 let attention_mask = &chunk[attention_mask_idx];
-                let output_dims = session.outputs[0].dimensions.last().unwrap().unwrap() as usize;
+                let output_dims = *session.outputs[0].output_type.tensor_dimensions().unwrap().last().unwrap() as usize;
                 let embeddings: Vec<Vec<f32>> = self.model_params.pooling_strategy.pool(
                     embeddings,
                     attention_mask,
@@ -529,12 +533,12 @@ impl EncoderService {
         )?)
         .into_dyn();
 
-        let outputs = session.run(vec![
-            Value::from_array(session.allocator(), &ids)?,
-            Value::from_array(session.allocator(), &mask)?,
+        let outputs = session.run([
+            Value::from_array(&ids)?,
+            Value::from_array(&mask)?,
         ])?;
 
-        let binding = outputs[0].try_extract()?;
+        let binding = outputs[0].extract_tensor()?;
         let embeddings = binding.view();
 
         let seq_len = embeddings.shape().get(1).ok_or("not")?;
@@ -598,11 +602,10 @@ impl EncoderService {
 
         let processed_tokens = pixels.len();
 
-        let outputs = session.run(vec![Value::from_array(
-            session.allocator(),
-            &pixels.into_dyn(),
+        let outputs = session.run([Value::from_array(
+            &pixels,
         )?])?;
-        let binding = outputs[0].try_extract()?;
+        let binding = outputs[0].extract_tensor()?;
         let embeddings = binding.view();
 
         let seq_len = embeddings.shape().get(1).unwrap();
@@ -777,7 +780,6 @@ impl<'a> OrtRuntime<'a> {
 
         let model_info = map_write.get_mut(model_name).unwrap();
         let encoder = EncoderService::new(
-            &ONNX_ENV,
             model_name,
             model_info.params.clone(),
             &model_folder,
@@ -943,7 +945,7 @@ impl<'a> EmbeddingRuntime for OrtRuntime<'a> {
             // And output shuold have the dimensions
             // This should be checked when adding new model
 
-            let output_dims = model_info
+            let output_dims = *model_info
                 .encoder
                 .as_ref()
                 .unwrap()
@@ -951,10 +953,11 @@ impl<'a> EmbeddingRuntime for OrtRuntime<'a> {
                 .outputs
                 .last()
                 .unwrap()
-                .dimensions()
-                .last()
+                .output_type
+                .tensor_dimensions()
                 .unwrap()
-                .unwrap();
+                .last()
+                .unwrap() as usize;
 
             let invalid_vec = vec![-1.0; output_dims];
             let return_res = buffers
