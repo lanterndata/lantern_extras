@@ -69,7 +69,7 @@ make install
 <summary> Click to expand</summary>
 
 You should have onnxruntime in your system in order to run the extension.
-You can download the `onnxruntime` binary realease from GitHub https://github.com/microsoft/onnxruntime/releases/tag/v1.16.1 and place it somewhere in your system (e.g. /usr/lib/onnxruntime)
+You can download the `onnxruntime` binary realease from GitHub https://github.com/microsoft/onnxruntime/releases/tag/v1.17.1 and place it somewhere in your system (e.g. /usr/lib/onnxruntime)
 
 Then you should export these 2 environment variables
 
