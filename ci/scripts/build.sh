@@ -11,7 +11,7 @@ function setup_environment() {
 
 function setup_onnx() {
   pushd /tmp
-    ONNX_VERSION="1.16.1"
+    ONNX_VERSION="1.17.1"
     PACKAGE_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz" && \
     if [[ $ARCH == *"arm"* ]]; then PACKAGE_URL="https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-aarch64-${ONNX_VERSION}.tgz"; fi && \
     mkdir -p /usr/local/lib && \
