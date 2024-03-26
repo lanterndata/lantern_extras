@@ -3,11 +3,11 @@ use image::{imageops::FilterType, io::Reader as ImageReader, GenericImageView};
 use isahc::{config::RedirectPolicy, prelude::*, HttpClient};
 use itertools::Itertools;
 use ndarray::{s, Array2, Array4, ArrayBase, Axis, CowArray, CowRepr, Dim, IxDynImpl};
+use ort::ArrayViewHolder;
 use ort::CPUExecutionProvider;
 use ort::CUDAExecutionProvider;
 use ort::OpenVINOExecutionProvider;
 use ort::Session;
-use ort::ArrayViewHolder;
 use ort::{GraphOptimizationLevel, Value};
 use serde::Deserialize;
 use std::{
@@ -36,10 +36,7 @@ pub enum PoolingStrategy {
 }
 
 impl PoolingStrategy {
-    fn cls_pooling(
-        embeddings: ArrayViewHolder<'_, f32>,
-        output_dims: usize,
-    ) -> Vec<Vec<f32>> {
+    fn cls_pooling(embeddings: ArrayViewHolder<'_, f32>, output_dims: usize) -> Vec<Vec<f32>> {
         embeddings
             .slice(s![.., 0, ..])
             .iter()
@@ -265,20 +262,6 @@ lazy_static! {
     ]));
 }
 
-lazy_static! {
-    // ONNX_ENV is used to initiate ort environment once when it is first dereferenced.
-    static ref ONNX_ENV: bool = {
-        ort::init().with_name("ldb_extras")
-            .with_execution_providers([
-                CUDAExecutionProvider::default().build(),
-                OpenVINOExecutionProvider::default().build(),
-                CPUExecutionProvider::default().build(),
-            ])
-            .commit()
-            .expect("can not initiate ort environment");
-        true
-    };
-}
 static MEM_PERCENT_THRESHOLD: f64 = 80.0;
 
 impl EncoderService {
@@ -309,11 +292,15 @@ impl EncoderService {
 
         let num_cpus = num_cpus::get();
 
-        let _ = &ONNX_ENV;
         let encoder = Session::builder()?
             .with_parallel_execution(true)?
             .with_intra_threads(num_cpus as i16)?
             .with_optimization_level(GraphOptimizationLevel::Level3)?
+            .with_execution_providers([
+                CUDAExecutionProvider::default().build(),
+                OpenVINOExecutionProvider::default().build(),
+                CPUExecutionProvider::default().build(),
+            ])?
             .with_model_from_file(Path::join(model_folder, "model.onnx"))?;
 
         Ok(EncoderService {
@@ -481,7 +468,12 @@ impl EncoderService {
                 let binding = outputs[0].extract_tensor()?;
                 let embeddings = binding.view();
                 let attention_mask = &chunk[attention_mask_idx];
-                let output_dims = *session.outputs[0].output_type.tensor_dimensions().unwrap().last().unwrap() as usize;
+                let output_dims = *session.outputs[0]
+                    .output_type
+                    .tensor_dimensions()
+                    .unwrap()
+                    .last()
+                    .unwrap() as usize;
                 let embeddings: Vec<Vec<f32>> = self.model_params.pooling_strategy.pool(
                     embeddings,
                     attention_mask,
@@ -533,10 +525,7 @@ impl EncoderService {
         )?)
         .into_dyn();
 
-        let outputs = session.run([
-            Value::from_array(&ids)?,
-            Value::from_array(&mask)?,
-        ])?;
+        let outputs = session.run([Value::from_array(&ids)?, Value::from_array(&mask)?])?;
 
         let binding = outputs[0].extract_tensor()?;
         let embeddings = binding.view();
@@ -602,9 +591,7 @@ impl EncoderService {
 
         let processed_tokens = pixels.len();
 
-        let outputs = session.run([Value::from_array(
-            &pixels,
-        )?])?;
+        let outputs = session.run([Value::from_array(&pixels)?])?;
         let binding = outputs[0].extract_tensor()?;
         let embeddings = binding.view();
 
