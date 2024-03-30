@@ -18,7 +18,7 @@ RUN apt update && \
 # Download onnxruntime
 RUN mkdir -p /usr/local/lib && \
     cd /usr/local/lib && \
-    wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.16.1/onnxruntime-linux-x64-gpu-1.16.1.tgz && \
+    wget -q https://github.com/microsoft/onnxruntime/releases/download/v1.17.1/onnxruntime-linux-x64-gpu-1.17.1.tgz && \
     tar xzf ./onnx*.tgz && \
     rm -rf ./onnx*.tgz && \
     mv ./onnx* ./onnxruntime 
