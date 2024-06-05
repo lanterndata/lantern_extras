@@ -51,11 +51,12 @@ jobs:
         run: RUN_POSTGRES=1 ./ci/scripts/build.sh
         env:
           PG_VERSION: ${{ matrix.postgres }}
-      # Enable tmate debugging of manually-triggered workflows if the input option was provided
-      - name: Setup tmate session
-        uses: mxschmitt/action-tmate@v3
+      - name: Setup permissions
+        run: |
+          sudo chmod 777 -R /usr/lib/postgresql/15/lib/
+          sudo chmod 777 -R /usr/share/postgresql/15/extension/
       - name: Run tests
-        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+        run: cargo llvm-cov --workspace --lcov --output-path lcov.info
         env:
           OPENAI_TOKEN: ${{ secrets.OPENAI_TOKEN }}
           COHERE_TOKEN: ${{ secrets.COHERE_TOKEN }}
