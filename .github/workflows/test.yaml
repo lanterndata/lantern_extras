@@ -34,6 +34,8 @@ jobs:
           workspaces: |
             lantern_cli
             lantern_extras
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
       - name: Setup test env
         run: sudo su -c "PG_VERSION=$PG_VERSION SETUP_POSTGRES=1 SETUP_TESTS=1 ./ci/scripts/build.sh"
         env:
@@ -50,8 +52,14 @@ jobs:
         env:
           PG_VERSION: ${{ matrix.postgres }}
       - name: Run tests
-        run: cargo test --workspace --exclude lantern_extras -- --nocapture --test-threads=1
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
         env:
           OPENAI_TOKEN: ${{ secrets.OPENAI_TOKEN }}
           COHERE_TOKEN: ${{ secrets.COHERE_TOKEN }}
           DB_URL: "postgres://postgres@127.0.0.1:5432/postgres"
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v4.0.1
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
+          files: lcov.info
+          fail_ci_if_error: true
