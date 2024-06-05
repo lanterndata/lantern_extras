@@ -62,7 +62,10 @@ jobs:
           COHERE_TOKEN: ${{ secrets.COHERE_TOKEN }}
           DB_URL: "postgres://postgres@127.0.0.1:5432/postgres"
       - name: Upload coverage to Codecov
+        env:
+          codecov_token: ${{ secrets.CODECOV_TOKEN }}
         uses: codecov/codecov-action@v4.0.1
+        if: ${{ env.codecov_token != '' && startsWith(matrix.os, 'ubuntu') }} # for now run only on once
         with:
           token: ${{ secrets.CODECOV_TOKEN }} # not required for public repos
           files: lcov.info
