@@ -20,7 +20,7 @@ impl Logger {
     }
 
     pub fn print_raw(&self, msg: &str) {
-        println!("{}", msg);
+        eprintln!("{}", msg);
     }
 
     pub fn info(&self, msg: &str) {
@@ -28,7 +28,7 @@ impl Logger {
             return;
         }
 
-        println!("[*] [{}] {}", &self.label, msg);
+        eprintln!("[*] [{}] {}", &self.label, msg);
     }
 
     pub fn debug(&self, msg: &str) {
@@ -36,7 +36,7 @@ impl Logger {
             return;
         }
 
-        println!("[+] [{}] {}", &self.label, msg);
+        eprintln!("[+] [{}] {}", &self.label, msg);
     }
 
     pub fn warn(&self, msg: &str) {
@@ -44,7 +44,7 @@ impl Logger {
             return;
         }
 
-        println!("[!] [{}] {}", &self.label, msg);
+        eprintln!("[!] [{}] {}", &self.label, msg);
     }
 
     pub fn error(&self, msg: &str) {

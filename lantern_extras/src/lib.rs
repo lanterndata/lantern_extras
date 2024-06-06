@@ -2,6 +2,7 @@ use core::ffi::CStr;
 use pgrx::{prelude::*, GucContext, GucFlags, GucRegistry, GucSetting};
 
 pgrx::pg_module_magic!();
+pub mod daemon;
 pub mod dotvecs;
 pub mod embeddings;
 pub mod external_index;
@@ -16,6 +17,7 @@ pub static OPENAI_AZURE_ENTRA_TOKEN: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(None);
 pub static COHERE_TOKEN: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(None);
+pub static ENABLE_DAEMON: GucSetting<bool> = GucSetting::<bool>::new(true);
 
 #[allow(non_snake_case)]
 #[pg_guard]
@@ -60,7 +62,20 @@ pub unsafe extern "C" fn _PG_init() {
         GucContext::Userset,
         GucFlags::NO_SHOW_ALL,
     );
+    GucRegistry::define_bool_guc(
+        "lantern_extras.enable_daemon",
+        "Enable Lantern Daemon",
+        "Flag to indicate if daemon is enabled or not",
+        &ENABLE_DAEMON,
+        GucContext::Sighup,
+        GucFlags::NO_SHOW_ALL,
+    );
+
+    if ENABLE_DAEMON.get() {
+        daemon::start_daemon(true, false, false).unwrap();
+    }
 }
+
 #[cfg(test)]
 pub mod pg_test {
     pub fn setup(_options: Vec<&str>) {
