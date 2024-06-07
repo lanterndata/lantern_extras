@@ -4,7 +4,7 @@ use lantern_cli::{
     daemon::{cli::DaemonArgs, start},
     logger::{LogLevel, Logger},
     types::AnyhowVoidResult,
-    utils::quote_ident,
+    utils::{get_full_table_name, quote_ident},
 };
 use pgrx::prelude::*;
 use tokio::runtime::Runtime;
@@ -117,7 +117,7 @@ fn add_embedding_job<'a>(
           INSERT INTO _lantern_internal.embedding_generation_jobs ("table", "schema", pk, src_column, dst_column, embedding_model, runtime, runtime_params) VALUES
           ($1, $2, $3, $4, $5, $6, $7, $8::jsonb) RETURNING id;
         "#,
-            table = quote_ident(table),
+            table = get_full_table_name(schema, table),
             dst_column = quote_ident(dst_column)
         ),
         vec![
@@ -200,4 +200,184 @@ fn resume_embedding_job<'a>(job_id: i32) -> AnyhowVoidResult {
     )?;
 
     Ok(())
+}
+
+#[cfg(any(test, feature = "pg_test"))]
+#[pg_schema]
+pub mod tests {
+    use std::time::Duration;
+    use crate::*;
+
+    #[pg_test]
+    fn test_add_daemon_job() {
+        Spi::connect(|mut client| {
+            // reload daemon
+            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+            client.update(
+                "
+                CREATE TABLE t1 (id serial primary key, title text);
+                ",
+                None,
+                None,
+            )?;
+            let id = client.select("SELECT add_embedding_job('t1', 'title', 'title_embedding', 'BAAI/bge-small-en', 'ort', '{}', 'id', 'public')", None, None)?;
+
+            let id: i32 = id.first().get(1)?.unwrap();
+
+            assert_eq!(id, 1);
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+    }
+
+    #[pg_test]
+    fn test_get_daemon_job() {
+        Spi::connect(|mut client| {
+            // reload daemon
+            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+            client.update(
+                "
+                CREATE TABLE t1 (id serial primary key, title text);
+                ",
+                None,
+                None,
+            )?;
+
+            let id = client.update("SELECT add_embedding_job('t1', 'title', 'title_embedding', 'BAAI/bge-small-en', 'ort', '{}', 'id', 'public')", None, None)?;
+            let id: i32 = id.first().get(1)?.unwrap();
+
+            // queued
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+            
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "queued");
+            assert_eq!(progress, 0);
+            assert_eq!(error, None);
+
+            // Failed
+
+            client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NOW(), init_failure_reason='test';", None, None)?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+            
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: &str = job.get(3)?.unwrap();
+
+            assert_eq!(status, "failed");
+            assert_eq!(progress, 0);
+            assert_eq!(error, "test");
+
+            // In progress
+            client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=60, init_started_at=NOW();", None, None)?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+            
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "in_progress");
+            assert_eq!(progress, 60);
+            assert_eq!(error, None);
+            
+            // Canceled
+            client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=0, init_started_at=NULL, canceled_at=NOW();", None, None)?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+            
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "canceled");
+            assert_eq!(progress, 0);
+            assert_eq!(error, None);
+            
+            // Enabled
+            client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=100, init_started_at=NULL, canceled_at=NULL, init_finished_at=NOW();", None, None)?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+            
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "enabled");
+            assert_eq!(progress, 100);
+            assert_eq!(error, None);
+
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+    }
+    
+    #[pg_test]
+    fn test_cancel_daemon_job() {
+        Spi::connect(|mut client| {
+            // reload daemon
+            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+            client.update(
+                "
+                CREATE TABLE t1 (id serial primary key, title text);
+                ",
+                None,
+                None,
+            )?;
+            let id = client.update("SELECT add_embedding_job('t1', 'title', 'title_embedding', 'BAAI/bge-small-en', 'ort', '{}', 'id', 'public')", None, None)?;
+            let id: i32 = id.first().get(1)?.unwrap();
+            client.update("SELECT cancel_embedding_job($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "canceled");
+            assert_eq!(progress, 0);
+            assert_eq!(error, None);
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+    }
+
+    #[pg_test]
+    fn test_resume_daemon_job() {
+        Spi::connect(|mut client| {
+            // reload daemon
+            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
+            std::thread::sleep(Duration::from_secs(2));
+            client.update(
+                "
+                CREATE TABLE t1 (id serial primary key, title text);
+                ",
+                None,
+                None,
+            )?;
+            let id = client.update("SELECT add_embedding_job('t1', 'title', 'title_embedding', 'BAAI/bge-small-en', 'ort', '{}', 'id', 'public')", None, None)?;
+            let id: i32 = id.first().get(1)?.unwrap();
+            client.update("SELECT cancel_embedding_job($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            client.update("SELECT resume_embedding_job($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
+            let job = rows.first();
+
+            let status: &str = job.get(1)?.unwrap();
+            let progress: i16 = job.get(2)?.unwrap();
+            let error: Option<&str> = job.get(3)?;
+
+            assert_eq!(status, "queued");
+            assert_eq!(progress, 0);
+            assert_eq!(error, None);
+            Ok::<(), anyhow::Error>(())
+        })
+        .unwrap();
+    }
 }
