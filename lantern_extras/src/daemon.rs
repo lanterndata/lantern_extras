@@ -10,6 +10,8 @@ use pgrx::prelude::*;
 use tokio::runtime::Runtime;
 use tokio_util::sync::CancellationToken;
 
+use crate::DAEMON_DATABASES;
+
 pub fn start_daemon(
     embeddings: bool,
     indexing: bool,
@@ -38,10 +40,24 @@ pub fn start_daemon(
         Ok::<(String, String, String, String), anyhow::Error>((db, user, socket_path, port))
     })?;
 
-    let connection_string = format!(
-        "postgresql://{user}@{socket_path}:{port}/{db}",
-        socket_path = socket_path.replace("/", "%2F")
-    );
+    let mut target_dbs = vec![];
+
+    if let Some(db_list) = DAEMON_DATABASES.get() {
+        for db_name in db_list.to_str()?.split(",") {
+            let connection_string = format!(
+                "postgresql://{user}@{socket_path}:{port}/{db}",
+                socket_path = socket_path.replace("/", "%2F"),
+                db = db_name.trim()
+            );
+            target_dbs.push(connection_string);
+        }
+    } else {
+        let connection_string = format!(
+            "postgresql://{user}@{socket_path}:{port}/{db}",
+            socket_path = socket_path.replace("/", "%2F")
+        );
+        target_dbs.push(connection_string);
+    }
 
     std::thread::spawn(move || {
         let mut last_retry = Instant::now();
@@ -51,6 +67,7 @@ pub fn start_daemon(
             let rt = Runtime::new().unwrap();
             let res = rt.block_on(start(
                 DaemonArgs {
+                    label: None,
                     embeddings,
                     external_index: indexing,
                     autotune,
@@ -59,7 +76,7 @@ pub fn start_daemon(
                     master_db: None,
                     master_db_schema: String::new(),
                     schema: String::from("_lantern_internal"),
-                    target_db: Some(vec![connection_string.clone()]),
+                    target_db: Some(target_dbs.clone()),
                 },
                 Some(logger.clone()),
                 cancellation_token.clone(),
@@ -148,9 +165,13 @@ fn get_embedding_job_status<'a>(
           WHERE id=$1;
         "#,
         vec![(PgBuiltInOids::INT4OID.oid(), job_id.into_datum())],
-    )?;
+    );
 
-    Ok(TableIterator::once(tuple))
+    if tuple.is_err() {
+        return Ok(TableIterator::once((None, None, None)));
+    }
+
+    Ok(TableIterator::once(tuple.unwrap()))
 }
 
 #[pg_extern(immutable, parallel_safe)]

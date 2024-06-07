@@ -18,6 +18,8 @@ pub static OPENAI_AZURE_ENTRA_TOKEN: GucSetting<Option<&'static CStr>> =
 pub static COHERE_TOKEN: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(None);
 pub static ENABLE_DAEMON: GucSetting<bool> = GucSetting::<bool>::new(true);
+pub static DAEMON_DATABASES: GucSetting<Option<&'static CStr>> =
+    GucSetting::<Option<&'static CStr>>::new(None);
 
 #[allow(non_snake_case)]
 #[pg_guard]
@@ -60,6 +62,14 @@ pub unsafe extern "C" fn _PG_init() {
         "Used when generating embeddings with Cohere models",
         &COHERE_TOKEN,
         GucContext::Userset,
+        GucFlags::NO_SHOW_ALL,
+    );
+    GucRegistry::define_string_guc(
+        "lantern_extras.daemon_databases",
+        "Databases to watch",
+        "Comma separated list of database names to which daemon will be connected",
+        &DAEMON_DATABASES,
+        GucContext::Sighup,
         GucFlags::NO_SHOW_ALL,
     );
     GucRegistry::define_bool_guc(
