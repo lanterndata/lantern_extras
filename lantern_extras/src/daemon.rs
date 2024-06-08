@@ -205,8 +205,8 @@ fn resume_embedding_job<'a>(job_id: i32) -> AnyhowVoidResult {
 #[cfg(any(test, feature = "pg_test"))]
 #[pg_schema]
 pub mod tests {
-    use std::time::Duration;
     use crate::*;
+    use std::time::Duration;
 
     #[pg_test]
     fn test_add_daemon_job() {
@@ -251,7 +251,7 @@ pub mod tests {
             // queued
             let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
             let job = rows.first();
-            
+
             let status: &str = job.get(1)?.unwrap();
             let progress: i16 = job.get(2)?.unwrap();
             let error: Option<&str> = job.get(3)?;
@@ -265,7 +265,7 @@ pub mod tests {
             client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NOW(), init_failure_reason='test';", None, None)?;
             let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
             let job = rows.first();
-            
+
             let status: &str = job.get(1)?.unwrap();
             let progress: i16 = job.get(2)?.unwrap();
             let error: &str = job.get(3)?.unwrap();
@@ -278,7 +278,7 @@ pub mod tests {
             client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=60, init_started_at=NOW();", None, None)?;
             let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
             let job = rows.first();
-            
+
             let status: &str = job.get(1)?.unwrap();
             let progress: i16 = job.get(2)?.unwrap();
             let error: Option<&str> = job.get(3)?;
@@ -286,12 +286,12 @@ pub mod tests {
             assert_eq!(status, "in_progress");
             assert_eq!(progress, 60);
             assert_eq!(error, None);
-            
+
             // Canceled
             client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=0, init_started_at=NULL, canceled_at=NOW();", None, None)?;
             let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
             let job = rows.first();
-            
+
             let status: &str = job.get(1)?.unwrap();
             let progress: i16 = job.get(2)?.unwrap();
             let error: Option<&str> = job.get(3)?;
@@ -299,12 +299,12 @@ pub mod tests {
             assert_eq!(status, "canceled");
             assert_eq!(progress, 0);
             assert_eq!(error, None);
-            
+
             // Enabled
             client.update("UPDATE _lantern_internal.embedding_generation_jobs SET init_failed_at=NULL, init_failure_reason=NULL, init_progress=100, init_started_at=NULL, canceled_at=NULL, init_finished_at=NOW();", None, None)?;
             let rows = client.select("SELECT status, progress, error FROM get_embedding_job_status($1)", None, Some(vec![(PgBuiltInOids::INT4OID.oid(), id.into_datum())]))?;
             let job = rows.first();
-            
+
             let status: &str = job.get(1)?.unwrap();
             let progress: i16 = job.get(2)?.unwrap();
             let error: Option<&str> = job.get(3)?;
@@ -317,7 +317,7 @@ pub mod tests {
         })
         .unwrap();
     }
-    
+
     #[pg_test]
     fn test_cancel_daemon_job() {
         Spi::connect(|mut client| {
