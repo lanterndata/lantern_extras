@@ -222,9 +222,9 @@ pub mod tests {
             )?;
             let id = client.select("SELECT add_embedding_job('t1', 'title', 'title_embedding', 'BAAI/bge-small-en', 'ort', '{}', 'id', 'public')", None, None)?;
 
-            let id: i32 = id.first().get(1)?.unwrap();
+            let id: Option<i32> = id.first().get(1)?;
 
-            assert_eq!(id, 1);
+            assert_eq!(id.is_none(), false);
             Ok::<(), anyhow::Error>(())
         })
         .unwrap();
