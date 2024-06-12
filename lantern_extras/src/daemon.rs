@@ -211,9 +211,8 @@ pub mod tests {
     #[pg_test]
     fn test_add_daemon_job() {
         Spi::connect(|mut client| {
-            // reload daemon
-            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
-            std::thread::sleep(Duration::from_secs(2));
+            // wait for daemon
+            std::thread::sleep(Duration::from_secs(1));
             client.update(
                 "
                 CREATE TABLE t1 (id serial primary key, title text);
@@ -234,9 +233,8 @@ pub mod tests {
     #[pg_test]
     fn test_get_daemon_job() {
         Spi::connect(|mut client| {
-            // reload daemon
-            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
-            std::thread::sleep(Duration::from_secs(2));
+            // wait for daemon
+            std::thread::sleep(Duration::from_secs(1));
             client.update(
                 "
                 CREATE TABLE t1 (id serial primary key, title text);
@@ -321,9 +319,8 @@ pub mod tests {
     #[pg_test]
     fn test_cancel_daemon_job() {
         Spi::connect(|mut client| {
-            // reload daemon
-            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
-            std::thread::sleep(Duration::from_secs(2));
+            // wait for daemon
+            std::thread::sleep(Duration::from_secs(1));
             client.update(
                 "
                 CREATE TABLE t1 (id serial primary key, title text);
@@ -352,9 +349,8 @@ pub mod tests {
     #[pg_test]
     fn test_resume_daemon_job() {
         Spi::connect(|mut client| {
-            // reload daemon
-            client.update("DROP EXTENSION lantern_extras; CREATE EXTENSION lantern_extras;", None, None)?;
-            std::thread::sleep(Duration::from_secs(2));
+            // wait for daemon
+            std::thread::sleep(Duration::from_secs(1));
             client.update(
                 "
                 CREATE TABLE t1 (id serial primary key, title text);

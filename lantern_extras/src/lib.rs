@@ -17,10 +17,6 @@ pub static OPENAI_AZURE_ENTRA_TOKEN: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(None);
 pub static COHERE_TOKEN: GucSetting<Option<&'static CStr>> =
     GucSetting::<Option<&'static CStr>>::new(None);
-
-#[cfg(any(test, feature = "pg_test"))]
-pub static ENABLE_DAEMON: GucSetting<bool> = GucSetting::<bool>::new(true);
-#[cfg(not(any(test, feature = "pg_test")))]
 pub static ENABLE_DAEMON: GucSetting<bool> = GucSetting::<bool>::new(false);
 
 pub static DAEMON_DATABASES: GucSetting<Option<&'static CStr>> =
@@ -98,7 +94,6 @@ pub mod pg_test {
     }
 
     pub fn postgresql_conf_options() -> Vec<&'static str> {
-        // return any postgresql.conf settings that are required for your tests
-        vec![]
+        vec!["lantern_extras.enable_daemon=true"]
     }
 }
