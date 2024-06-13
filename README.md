@@ -406,8 +406,6 @@ In this case this command should be run 10 times for each part of codebook in ra
 Table should have primary key, in order for this job to work. If primary key is different than `id` provide it using `--pk` argument
 
 ## Lantern Daemon in SQL
-Daemon Management
-Enabling the Daemon
 To enable the daemon, set the `lantern_extras.enable_daemon` GUC to true. This can be done by executing the following command:
 
 ```sql
@@ -415,7 +413,7 @@ ALTER SYSTEM SET lantern_extras.enable_daemon = true;
 ```
 After setting this, you will need to restart the database for the changes to take effect. The daemon will start automatically, targeting the current connected database or databases specified in the `lantern_extras.daemon_databases` GUC.
 
-**Important Notes**
+**Important Notes**  
 This is an experimental functionality to enable lantern daemon from SQL
 If the extension is not in shared_preload_libraries, the daemon will start as soon as any of the extension functions are called.
 Starting or stopping the daemon requires a database restart.
@@ -424,8 +422,8 @@ Starting or stopping the daemon requires a database restart.
 ### SQL Functions for Embedding Jobs
 This functions can be used both with externally managed Lantern Daemon or with a daemon run from the SQL.
 
-**Adding an Embedding Job**
-To add a new embedding job, use the add_embedding_job function:
+**Adding an Embedding Job**  
+To add a new embedding job, use the `add_embedding_job` function:
 
 ```sql
 SELECT add_embedding_job(
@@ -440,27 +438,27 @@ SELECT add_embedding_job(
 );
 ```
 
-**Getting Embedding Job Status**
-To get the status of an embedding job, use the get_embedding_job_status function:
+**Getting Embedding Job Status**  
+To get the status of an embedding job, use the `get_embedding_job_status` function:
 
 ```sql
 SELECT * FROM get_embedding_job_status(job_id);
 ```
 This will return a table with the following columns:
 
-`status`: The current status of the job.
-`progress`: The progress of the job as a percentage.
-`error`: Any error message if the job failed.
+- `status`: The current status of the job.
+- `progress`: The progress of the job as a percentage.
+- `error`: Any error message if the job failed.
 
-**Canceling an Embedding Job**
-To cancel an embedding job, use the cancel_embedding_job function:
+**Canceling an Embedding Job**  
+To cancel an embedding job, use the `cancel_embedding_job` function:
 
 ```sql
 SELECT cancel_embedding_job(job_id);
 ```
 
-**Resuming an Embedding Job**
-To resume a paused embedding job, use the resume_embedding_job function:
+**Resuming an Embedding Job**  
+To resume a paused embedding job, use the `resume_embedding_job` function:
 
 ```sql
 SELECT resume_embedding_job(job_id);
