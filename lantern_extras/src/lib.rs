@@ -83,6 +83,9 @@ pub unsafe extern "C" fn _PG_init() {
     );
 
     if ENABLE_DAEMON.get() {
+        warning!("Lantern Daemon in SQL is experimental and can lead to undefined behaviour");
+        // TODO:: Make extension working with shared_preload_libs and start daemon only when
+        // started from shared_preload_libs
         daemon::start_daemon(true, false, false).unwrap();
     }
 }

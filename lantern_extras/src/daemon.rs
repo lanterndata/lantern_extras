@@ -99,7 +99,7 @@ pub fn start_daemon(
     Ok(true)
 }
 
-#[pg_extern(immutable, parallel_unsafe)]
+#[pg_extern(immutable, parallel_unsafe, security_definer)]
 fn add_embedding_job<'a>(
     table: &'a str,
     src_column: &'a str,
@@ -135,7 +135,7 @@ fn add_embedding_job<'a>(
     Ok(id.unwrap())
 }
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, security_definer)]
 fn get_embedding_job_status<'a>(
     job_id: i32,
 ) -> Result<
@@ -174,7 +174,7 @@ fn get_embedding_job_status<'a>(
     Ok(TableIterator::once(tuple.unwrap()))
 }
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, security_definer)]
 fn cancel_embedding_job<'a>(job_id: i32) -> AnyhowVoidResult {
     Spi::run_with_args(
         r#"
@@ -188,7 +188,7 @@ fn cancel_embedding_job<'a>(job_id: i32) -> AnyhowVoidResult {
     Ok(())
 }
 
-#[pg_extern(immutable, parallel_safe)]
+#[pg_extern(immutable, parallel_safe, security_definer)]
 fn resume_embedding_job<'a>(job_id: i32) -> AnyhowVoidResult {
     Spi::run_with_args(
         r#"
